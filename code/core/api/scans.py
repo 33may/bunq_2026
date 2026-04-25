@@ -1,7 +1,6 @@
 """Scan endpoints — upload → parse → review → finalize."""
 from __future__ import annotations
 
-import asyncio
 import io
 import logging
 from datetime import date as date_t
@@ -112,37 +111,15 @@ async def _process_scan(scan_id: str) -> None:
         scan.status = ScanStatus.processing
         db.commit()
 
-        # ── DEMO MODE ── Skip Claude. Sleep 5s so the spinner looks
-        # real, then return the canonical AH-long parse for any upload.
-        await asyncio.sleep(5)
-        payload = {
-            "merchant": "Albert Heijn XL",
-            "description": "groceries",
-            "location": "Triade 14, Assen",
-            "total": 54.25,
-            "currency": "EUR",
-            "line_items": [
-                {"name": "avocado",        "price": 3.99,  "quantity": 2},
-                {"name": "sushi wrap",     "price": 4.29,  "quantity": 2},
-                {"name": "ah bbq burg",    "price": 10.00, "quantity": 1},
-                {"name": "protein panc",   "price": 2.89,  "quantity": 1},
-                {"name": "cottage cheese", "price": 0.95,  "quantity": 1},
-                {"name": "knorr teriyaki", "price": 2.99,  "quantity": 2},
-                {"name": "luxe hamburg",   "price": 1.99,  "quantity": 1},
-                {"name": "alpro pudding",  "price": 2.19,  "quantity": 2},
-                {"name": "alpro drink",    "price": 2.89,  "quantity": 1},
-                {"name": "protein soja",   "price": 2.89,  "quantity": 1},
-                {"name": "alpro melk",     "price": 2.79,  "quantity": 1},
-                {"name": "obento bowl",    "price": 2.99,  "quantity": 1},
-                {"name": "obento bowl",    "price": 2.99,  "quantity": 1},
-                {"name": "lekkerbekjes",   "price": 5.49,  "quantity": 2},
-                {"name": "fuet spanje",    "price": 2.99,  "quantity": 1},
-                {"name": "biltong",        "price": 3.79,  "quantity": 1},
-                {"name": "rookworst",      "price": 1.99,  "quantity": 1},
-                {"name": "ijsbergsla",     "price": 1.59,  "quantity": 1},
-                {"name": "tissues",        "price": 0.69,  "quantity": 1},
-            ],
-        }
+        try:
+            local_path = get_storage().local_path(scan.image_url)
+            payload = await parse_receipt_image(local_path)
+        except Exception as exc:  # noqa: BLE001 — record any failure
+            log.exception("scan %s parsing failed", scan_id)
+            scan.status = ScanStatus.failed
+            scan.error = str(exc)[:500]
+            db.commit()
+            return
 
         # Apply parsed fields. AI guesses go into `*_suggested`; the editable
         # fields are seeded with the same value so the form shows it pre-filled.
