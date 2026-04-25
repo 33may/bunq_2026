@@ -1,0 +1,7 @@
+code/.venv/
+code/.secrets/
+code/.env
+code/.house/
+__pycache__/
+*.pyc
+.DS_Store
