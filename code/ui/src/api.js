@@ -85,8 +85,26 @@ export const aiAssign = (id, prompt) =>
 export const finalizeScan = (id, body) =>
   req(`/scans/${id}/finalize`, { method: 'POST', body: body || undefined })
 
+// Resolve the API URL for a scan's stored image. Streams via the API so
+// cookies / permissions stay coherent regardless of local-vs-S3 backend.
+export const scanImageUrl = (id) => `${API_BASE}/scans/${id}/image`
+
+// Attach a receipt image to an existing split (post-creation). Reuses
+// the scans table — server creates a Scan row, saves the file, links it
+// via split.source_scan_id, and returns the updated split.
+export const uploadSplitReceipt = (splitId, file) => {
+  const fd = new FormData()
+  fd.append('file', file, file.name || 'receipt.jpg')
+  return req(`/splits/${splitId}/receipt`, { method: 'POST', body: fd, isFormData: true })
+}
+
 // ── housemates ─────────────────────────────────────────────────────────
 export const listHousemates = () => req('/housemates')
+
+// ── personal profile MD ────────────────────────────────────────────────
+// The agent reads/proposes edits via MCP; this is the human-facing read/save.
+export const getMyProfile = () => req('/me/profile')
+export const putMyProfile = (text) => req('/me/profile', { method: 'PUT', body: { text } })
 
 // ── feed posts ─────────────────────────────────────────────────────────
 export const listPosts = () => req('/posts')
@@ -96,6 +114,23 @@ export const addComment = (postId, text) =>
   req(`/posts/${postId}/comments`, { method: 'POST', body: { text } })
 export const createSplitOnPost = (postId, body) =>
   req(`/posts/${postId}/split`, { method: 'POST', body })
+
+// ── regulars ───────────────────────────────────────────────────────────
+// Recurring household bills (rent/utilities/subs). Server returns each row
+// with computed next_due + days_until_due so the UI just sorts by it.
+export const listRegulars = () => req('/regulars')
+
+// ── notifications ──────────────────────────────────────────────────────
+// Server derives events from posts/comments/splits; UI tracks unread via
+// localStorage `bf:lastSeenNotifAt`.
+export const listNotifications = (limit = 50) =>
+  req(`/notifications?limit=${limit}`)
+
+// ── settle-up ──────────────────────────────────────────────────────────
+// Net all open SplitRequests with `peerId` (in either direction), revoke
+// them, and create one direct SplitRequest for the net difference.
+export const previewSettle = (peerId) => req(`/settle-up/${peerId}/preview`)
+export const doSettle = (peerId) => req(`/settle-up/${peerId}`, { method: 'POST' })
 
 // ── chat ───────────────────────────────────────────────────────────────
 // Three thread shapes share one table, discriminated server-side:

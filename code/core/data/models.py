@@ -279,6 +279,37 @@ class ChatAttachmentKind(str, enum.Enum):
     split_request = "split_request"
 
 
+class Regular(Base):
+    """Recurring household bill — rent, utilities, subscriptions.
+
+    `billing_day` is 1-31 (clamped to month length when shorter, e.g. 31 →
+    Feb 28/29). `cadence` is `monthly` only for now; expand later if we
+    need weekly/yearly. `payer_id` is who fronts the money (optional —
+    null means "shared, no specific payer").
+    """
+    __tablename__ = "regulars"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    house_id: Mapped[str] = mapped_column(ForeignKey("houses.id"), index=True)
+
+    title: Mapped[str] = mapped_column(String(120))
+    amount: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+    currency: Mapped[str] = mapped_column(String(8), default="EUR")
+
+    billing_day: Mapped[int] = mapped_column(Integer)        # 1..31
+    cadence: Mapped[str] = mapped_column(String(16), default="monthly")
+
+    color: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    emoji: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    payer_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(),
+    )
+
+
 class ChatMessage(Base):
     __tablename__ = "chat_messages"
 

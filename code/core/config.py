@@ -31,8 +31,10 @@ class Settings(BaseSettings):
     # ── storage ────────────────────────────────────────────────────────
     storage_backend: Literal["local", "s3"] = "local"
     upload_dir: Path = CODE_DIR / ".house" / "uploads"
+    profile_dir: Path = CODE_DIR / ".house" / "profiles"
     aws_s3_bucket: str = ""
     aws_s3_prefix: str = "scans/"
+    aws_s3_profile_prefix: str = "profiles/"
     aws_region: str = ""
 
     # ── upload limits ──────────────────────────────────────────────────

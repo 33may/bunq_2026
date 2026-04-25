@@ -21,11 +21,16 @@ from . import auth as auth_mod
 from . import bunq_me as bunq_me_mod
 from . import chats as chats_mod
 from . import house as house_mod
+from . import regulars as regulars_mod
 from . import scans as scans_mod
+from . import settle as settle_mod
 from . import splits as splits_mod
 from . import transcribe as transcribe_mod
 from . import posts as posts_mod
+from . import profile as profile_mod
 from . import ai as ai_mod
+from . import notifications as notifications_mod
+from ..services import regulars as regulars_svc
 
 log = logging.getLogger(__name__)
 
@@ -204,10 +209,27 @@ def _seed_demo_splits() -> None:
         db.close()
 
 
+def _seed_regulars() -> None:
+    """Insert the canonical 6 household regulars (rent, gas, water,
+    electricity, internet, netflix) into the first house if it has none.
+    Idempotent."""
+    db = SessionLocal()
+    try:
+        house = db.query(House).first()
+        if house is None:
+            return
+        n = regulars_svc.seed_defaults(db, house=house)
+        if n:
+            log.info("seeded %d regulars", n)
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     _seed_bunq_users()
     _seed_demo_splits()
+    _seed_regulars()
     yield
 
 
@@ -229,8 +251,12 @@ app.include_router(scans_mod.router)
 app.include_router(scans_mod.hm_router)
 app.include_router(transcribe_mod.router)
 app.include_router(posts_mod.router)
+app.include_router(profile_mod.router)
 app.include_router(ai_mod.router)
 app.include_router(chats_mod.router)
+app.include_router(settle_mod.router)
+app.include_router(regulars_mod.router)
+app.include_router(notifications_mod.router)
 
 
 @app.get("/health", tags=["meta"])

@@ -899,8 +899,16 @@ export function PrettyToolResult({ tool, content, ok }) {
     case 'list_splits':           return <PR_ListSplits rows={asArray(parsed)} />
     case 'get_split':              return <PR_Split row={parsed} />
     case 'get_balance_with':      return <PR_Balance data={parsed} />
+    case 'list_balances':         return <PR_ListBalances rows={asArray(parsed)} />
     case 'list_requests_with':    return <PR_ListRequests rows={asArray(parsed)} />
     case 'list_recent_payments':  return <PR_ListPayments rows={asArray(parsed)} />
+    case 'list_payments_with':    return <PR_ListRequests rows={asArray(parsed)} />
+    case 'get_bunq_balance':      return <PR_BunqBalance data={parsed} />
+    case 'list_posts':            return <PR_ListPosts rows={asArray(parsed)} />
+    case 'get_post':              return <PR_Post row={parsed} />
+    case 'list_unread':           return <PR_Unread data={parsed} />
+    case 'read_my_profile':       return <PR_Profile data={parsed} />
+    case 'send_chat_message':     return <PR_ChatSent data={parsed} />
     case 'emit_action':
     case 'apply_page_patch':
       return <PR_Plain text={typeof parsed === 'string' ? parsed : JSON.stringify(parsed)} />
@@ -908,6 +916,163 @@ export function PrettyToolResult({ tool, content, ok }) {
     default:
       return <PR_JsonFallback value={parsed ?? content} />
   }
+}
+
+function PR_BunqBalance({ data }) {
+  if (!data || data.error) {
+    return <div style={{ color: '#FF7A8A', fontFamily: SF, fontSize: 12 }}>
+      {data?.error || 'no balance'}
+    </div>
+  }
+  const iban = data.iban_last4 ? `••${data.iban_last4}` : ''
+  return (
+    <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+      <span style={{ ...PR_value, fontWeight: 800, fontSize: 16, color: BF_COLORS.lime }}>
+        {data.currency || 'EUR'} {data.balance}
+      </span>
+      {iban && <span style={PR_label}>{iban}</span>}
+      {data.description && <span style={PR_label}>· {data.description}</span>}
+    </div>
+  )
+}
+
+function PR_Profile({ data }) {
+  const text = (data?.text || '').trim()
+  if (!text) return <PR_Empty label="no profile yet" />
+  // Collapse to ~6 lines so the trace stays compact; expandable on hover.
+  const lines = text.split('\n')
+  const preview = lines.slice(0, 6).join('\n')
+  const more = lines.length > 6 ? lines.length - 6 : 0
+  return (
+    <div title={text} style={{
+      fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
+      fontSize: 11, lineHeight: 1.5, color: BF_COLORS.text,
+      whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+      background: 'rgba(255,255,255,0.03)',
+      border: `0.5px solid ${BF_COLORS.hairline}`,
+      borderRadius: 8, padding: 8,
+    }}>
+      {preview}
+      {more > 0 && (
+        <div style={{ color: BF_COLORS.sub, marginTop: 4 }}>+{more} more lines</div>
+      )}
+    </div>
+  )
+}
+
+function PR_ListBalances({ rows }) {
+  if (!rows.length) return <PR_Empty label="all even" />
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      {rows.map((b, i) => {
+        const owedToMe = b.direction === 'they_owe_me'
+        return (
+          <PR_Row
+            key={i}
+            title={b.counterparty?.name || '?'}
+            sub={owedToMe ? 'they owe you' : 'you owe them'}
+            trailing={<span style={{ ...PR_value, fontWeight: 800,
+              color: owedToMe ? BF_COLORS.lime : '#FF7A8A',
+            }}>€{b.net_amount}</span>}
+          />
+        )
+      })}
+    </div>
+  )
+}
+
+function PR_ListPosts({ rows }) {
+  if (!rows.length) return <PR_Empty label="no posts yet" />
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      {rows.map((p) => (
+        <PR_Row
+          key={p.id}
+          title={p.text?.slice(0, 80) || '(no text)'}
+          sub={`${p.author?.name || '?'} · ${p.comment_count || 0} comments`}
+        />
+      ))}
+    </div>
+  )
+}
+
+function PR_Post({ row }) {
+  if (!row) return <PR_Empty label="not found" />
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <PR_Row title={row.text || '(no text)'} sub={`by ${row.author?.name || '?'}`} />
+      {Array.isArray(row.comments) && row.comments.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 3, paddingLeft: 8 }}>
+          {row.comments.map((c) => (
+            <div key={c.id} style={{ ...PR_value, fontSize: 11.5 }}>
+              <span style={{ color: BF_COLORS.sub, fontWeight: 700 }}>{c.author?.name || '?'}: </span>
+              {c.text}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function PR_Unread({ data }) {
+  if (!data || typeof data !== 'object') return <PR_Empty label="all caught up" />
+  const sections = [
+    ['dms', 'direct messages'],
+    ['split_threads', 'split chats'],
+    ['request_threads', 'request chats'],
+    ['post_replies', 'feed replies'],
+  ].filter(([k]) => Array.isArray(data[k]) && data[k].length > 0)
+  if (!sections.length) return <PR_Empty label="all caught up" />
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {sections.map(([key, label]) => (
+        <div key={key} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{ ...PR_label }}>{label}</div>
+          {data[key].map((row, i) => {
+            if (key === 'dms') {
+              return <PR_Row key={i} title={row.peer?.name || '?'}
+                sub={row.last_text} trailing={<span style={PR_label}>{row.count}</span>} />
+            }
+            if (key === 'split_threads') {
+              return <PR_Row key={i} title={row.title || 'split'}
+                sub={row.last_text} trailing={<span style={PR_label}>{row.count}</span>} />
+            }
+            if (key === 'request_threads') {
+              return <PR_Row key={i} title={row.split_title || 'request'}
+                sub={row.last_text} trailing={<span style={PR_label}>{row.count}</span>} />
+            }
+            // post_replies
+            return (
+              <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <PR_Row title={row.post_text || 'your post'}
+                        sub={`${row.comments?.length || 0} new replies`} />
+                {(row.comments || []).slice(0, 3).map((c, j) => (
+                  <div key={j} style={{ ...PR_value, fontSize: 11.5, paddingLeft: 8 }}>
+                    <span style={{ color: BF_COLORS.sub, fontWeight: 700 }}>
+                      {c.author?.name || '?'}: </span>{c.text}
+                  </div>
+                ))}
+              </div>
+            )
+          })}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function PR_ChatSent({ data }) {
+  if (!data || data.error) {
+    return <div style={{ color: '#FF7A8A', fontFamily: SF, fontSize: 12 }}>
+      {data?.error || 'failed'}
+    </div>
+  }
+  return (
+    <div style={{ ...PR_value, fontSize: 12 }}>
+      sent to <span style={{ fontWeight: 700 }}>{data.sent_to?.name || '?'}</span>
+    </div>
+  )
 }
 
 function PR_ToolSearch({ rows }) {
@@ -1188,11 +1353,52 @@ function PreviewToolTrace({ tools }) {
   )
 }
 
+function consumedDefault(kind) {
+  switch (kind) {
+    case 'request':        return 'request sent'
+    case 'split':          return 'split sent'
+    case 'pay_request':    return 'request handled'
+    case 'scan':           return 'scan opened'
+    case 'settle_up':      return 'settled'
+    case 'comment':        return 'comment posted'
+    case 'update_profile': return 'memory updated'
+    default:               return 'done'
+  }
+}
+
+function AIActionDone({ summary }) {
+  return (
+    <div style={{
+      display: 'inline-flex', alignItems: 'center', gap: 6,
+      padding: '6px 10px', borderRadius: 12,
+      background: 'rgba(255,255,255,0.04)',
+      border: `0.5px solid ${BF_COLORS.hairline}`,
+      fontFamily: SF, fontSize: 11.5, color: BF_COLORS.sub,
+      letterSpacing: 0.05, opacity: 0.85,
+    }}>
+      <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+        <path d="M2.5 6.2 5 8.6 9.7 3.7" stroke={BF_COLORS.lime}
+              strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+      </svg>
+      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {summary}
+      </span>
+    </div>
+  )
+}
+
 // Renders a richer "what the AI prepared" card inside the preview.
 // Each `action.preview.kind` gets its own visual.
 export function AIActionCard({ action }) {
   const p = action.preview || {}
   const onClick = (e) => { e.stopPropagation(); action.onClick?.() }
+
+  // After the user has accepted/saved/sent the underlying action, App marks
+  // the card consumed. Swap to a muted "done" pill — visual confirmation
+  // that the tap landed without losing the chat history of what was done.
+  if (action.consumed) {
+    return <AIActionDone summary={action.summary || consumedDefault(p.kind)} />
+  }
 
   if (p.kind === 'request') {
     return (
@@ -1231,6 +1437,29 @@ export function AIActionCard({ action }) {
       <CardRow
         title={action.summary || 'scan a receipt'}
         cta={action.label || 'open camera'}
+        onClick={onClick}
+      />
+    )
+  }
+
+  if (p.kind === 'comment') {
+    return (
+      <CardRow
+        title={action.summary || 'leave a comment'}
+        sub={p.text ? `"${String(p.text).slice(0, 80)}${p.text.length > 80 ? '…' : ''}"` : null}
+        cta={action.label || 'open thread'}
+        onClick={onClick}
+      />
+    )
+  }
+
+  if (p.kind === 'update_profile') {
+    const line = (p.add || '').trim()
+    return (
+      <CardRow
+        title={action.summary || 'add to memory'}
+        sub={line || null}
+        cta={action.label || 'review'}
         onClick={onClick}
       />
     )
@@ -1281,7 +1510,7 @@ export function CardRow({ title, sub, amount, cta, onClick }) {
   )
 }
 
-function AIThinkingDots() {
+export function AIThinkingDots() {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 5, height: 18 }}>
       {[0, 1, 2].map(i => (

@@ -4,7 +4,7 @@ import { Avatar, Euro, Chip, Card, List, ListRow, AIBadge, AIPlan, ChatBar, AIPr
 import { ItemPage } from './ItemPage'
 import { AIWindow } from './AIWindow'
 import { RequestSplitForm } from './RequestSplitForm'
-import { MatesScreen, MatePage } from './MatesScreen'
+import { MatesScreen, MatePage, SettleSheet } from './MatesScreen'
 import { useMe } from './hooks/useMe.js'
 import { useHouse } from './hooks/useHouse.js'
 import { useMyBunq } from './hooks/useMyBunq.js'
@@ -14,9 +14,10 @@ import * as bus from './ai/pagePatchBus'
 import { log } from './ai/log'
 import { useSplits } from './hooks/useSplits.js'
 import { usePayments } from './hooks/usePayments.js'
+import { useRegulars } from './hooks/useRegulars.js'
 import Landing from './screens/Landing.jsx'
 import OAuthConsent from './screens/OAuthConsent.jsx'
-import { logoutSession, acceptSplitRequest, declineSplitRequest, getRequest } from './api.js'
+import { logoutSession, acceptSplitRequest, declineSplitRequest, getRequest, getPost, getMyProfile, putMyProfile } from './api.js'
 
 
 // iOS.jsx — Simplified iOS 26 (Liquid Glass) device frame
@@ -659,10 +660,10 @@ function TabBar({ active = 'home', onTab }) {
         <rect x="3" y="14" width="7" height="5" rx="2" stroke={c} strokeWidth="1.6"/>
       </svg>
     )},
-    { k: 'subs', label: 'subs', icon: (c) => (
+    { k: 'regular', label: 'regular', icon: (c) => (
       <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
-        <path d="M4 7h14M4 11h14M4 15h10" stroke={c} strokeWidth="1.8" strokeLinecap="round"/>
-        <circle cx="18" cy="15" r="2" stroke={c} strokeWidth="1.8"/>
+        <rect x="3" y="4" width="16" height="15" rx="3" stroke={c} strokeWidth="1.8"/>
+        <path d="M3 8h16M7 2v3M15 2v3" stroke={c} strokeWidth="1.8" strokeLinecap="round"/>
       </svg>
     )},
     { k: 'mates', label: 'mates', icon: (c, a) => (
@@ -1034,19 +1035,6 @@ function ThreadPage({ post, open, onClose, onOpenItem, housemates, onScanForPost
             text={post.text}
             attachment={post.attachment}
           />
-          {onScanForPost && (
-            <button
-              onClick={() => onScanForPost(post)}
-              style={{
-                padding: '10px 16px', borderRadius: 18,
-                background: BF_COLORS.lime, color: '#000', border: 'none',
-                fontFamily: SF, fontSize: 13, fontWeight: 700, letterSpacing: -0.1,
-                cursor: 'pointer', marginTop: 12, alignSelf: 'flex-start',
-              }}
-            >
-              scan a receipt for this
-            </button>
-          )}
         </div>
 
         {replies.length > 0 && (
@@ -1086,9 +1074,9 @@ function ThreadPage({ post, open, onClose, onOpenItem, housemates, onScanForPost
           </div>
         )}
 
-        {/* "+ split" affordance — only when live AND no split exists yet */}
+        {/* "+ split" / "+ scan" affordances — only when live AND no split exists yet */}
         {isLive && !splitForCard && (
-          <div style={{ padding: '10px 16px 4px' }}>
+          <div style={{ padding: '10px 16px 4px', display: 'flex', flexDirection: 'column', gap: 8 }}>
             <div onClick={() => setSplitFormOpen(true)} style={{
               padding: '12px 14px', borderRadius: 16,
               background: 'rgba(184,240,74,0.08)',
@@ -1101,12 +1089,32 @@ function ThreadPage({ post, open, onClose, onOpenItem, housemates, onScanForPost
               <svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 2v10M2 7h10" stroke={BF_COLORS.lime} strokeWidth="2" strokeLinecap="round"/></svg>
               spawn split from this post
             </div>
+            {onScanForPost && (
+              <div
+                // Use `detail` when live so the latest comments (re-fetched on
+                // open) are passed to the scan flow, not the stale feed-list
+                // snapshot in `post`.
+                onClick={() => onScanForPost(isLive ? (detail || post) : post)}
+                style={{
+                  padding: '12px 14px', borderRadius: 16,
+                  background: 'rgba(184,240,74,0.08)',
+                  border: `0.5px dashed rgba(184,240,74,0.5)`,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                  cursor: 'pointer',
+                  fontFamily: SF, fontSize: 13, fontWeight: 700, color: BF_COLORS.lime,
+                  letterSpacing: -0.1,
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 2v10M2 7h10" stroke={BF_COLORS.lime} strokeWidth="2" strokeLinecap="round"/></svg>
+                scan a receipt for this
+              </div>
+            )}
           </div>
         )}
       </div>
 
       {/* Composer — pinned bottom */}
-      <ThreadComposer onSend={isLive ? sendComment : undefined} />
+      <ThreadComposer onSend={isLive ? sendComment : undefined} prefill={post?._commentPrefill} />
 
       {splitFormOpen && (
         <ThreadSplitForm
@@ -1142,8 +1150,18 @@ function ReplyRow({ reply }) {
   );
 }
 
-function ThreadComposer({ onSend }) {
-  const [text, setText] = React.useState('');
+function ThreadComposer({ onSend, prefill }) {
+  const [text, setText] = React.useState(prefill || '');
+  // If a new prefill arrives (e.g. user opened the thread via an AI comment
+  // action), seed the composer with it. We DON'T overwrite the user's own
+  // edits — only react to a non-null prefill change.
+  const lastPrefillRef = React.useRef(prefill || null)
+  React.useEffect(() => {
+    if (prefill && prefill !== lastPrefillRef.current) {
+      lastPrefillRef.current = prefill
+      setText(prefill)
+    }
+  }, [prefill])
   const [busy, setBusy] = React.useState(false);
   const send = async () => {
     const t = text.trim();
@@ -1536,23 +1554,9 @@ function ProfilePage({ open, onClose, me, onLogout, bunqAccount, bunqLoading, on
 }
 
 // ═══ NotificationsPage — slide-up overlay listing recent notifications ═
-// Same overlay pattern (z 290). Reuses List + ListRow primitives. Each
-// notification row is identified by `kind` for an icon glyph and routes
-// later to the matching detail page (item / mate / thread).
-const SAMPLE_NOTIFICATIONS = [
-  // today
-  { id: 'n1', section: 'today',     kind: 'request',   actor: { name: 'alex',    initial: 'A', color: BF_COLORS.blue },  title: 'requested €6,20',      sub: 'cleaning supplies · split 4 ways', time: '12m', unread: true },
-  { id: 'n2', section: 'today',     kind: 'reply',     actor: { name: 'sam',     initial: 'S', color: BF_COLORS.coral }, title: 'replied to "going to AH"', sub: 'oh and tomatoes for tonight!',  time: '1h',  unread: true },
-  { id: 'n3', section: 'today',     kind: 'paid',      actor: { name: 'lena',    initial: 'L', color: BF_COLORS.lime },  title: 'paid you €4,20',        sub: 'thanks for the vase 🌸',           time: '3h',  unread: true },
-  { id: 'n4', section: 'today',     kind: 'ai',        actor: { name: 'bunq ai', initial: '✨', color: BF_COLORS.lime }, title: 'your weekly summary is ready', sub: '4 new requests · €18 settled', time: '6h' },
-  // yesterday
-  { id: 'n5', section: 'yesterday', kind: 'post',      actor: { name: 'marleen', initial: 'M', color: BF_COLORS.amber }, title: 'started a new post',     sub: 'who wants to chip in for a vacuum?', time: 'yesterday' },
-  { id: 'n6', section: 'yesterday', kind: 'remind',    actor: { name: 'sam',     initial: 'S', color: BF_COLORS.coral }, title: 'still owes €18,40',      sub: 'pizza night · last nudged 3d ago', time: 'yesterday' },
-  // earlier
-  { id: 'n7', section: 'earlier',   kind: 'paid',      actor: { name: 'alex',    initial: 'A', color: BF_COLORS.blue },  title: 'paid you €11,90',        sub: 'house dinner · settled',           time: '3d' },
-  { id: 'n8', section: 'earlier',   kind: 'subscription', actor: { name: 'spotify', initial: '♫', color: BF_COLORS.green }, title: 'spotify family renewed', sub: 'split 4 ways · €4,25 each',     time: '5d' },
-];
-
+// Reads /notifications (server-derived from posts/comments/splits). Unread
+// state is local: anything newer than `bf:lastSeenNotifAt` in localStorage
+// is unread. The page bumps that timestamp on close so the badge clears.
 function NotifGlyph({ kind }) {
   const map = {
     request:      { bg: BF_COLORS.coral, glyph: '↓' },
@@ -1574,11 +1578,72 @@ function NotifGlyph({ kind }) {
   );
 }
 
+const LAST_SEEN_KEY = 'bf:lastSeenNotifAt';
+
+// Bucket a created_at ISO into today / yesterday / earlier using the local
+// calendar day, not a 24h rolling window — matches how a user reads "today".
+function notifSection(iso) {
+  const d = new Date(iso);
+  const now = new Date();
+  const startOfDay = (x) => {
+    const c = new Date(x);
+    c.setHours(0, 0, 0, 0);
+    return c;
+  };
+  const today = startOfDay(now).getTime();
+  const yesterday = today - 24 * 3600 * 1000;
+  const dayStart = startOfDay(d).getTime();
+  if (dayStart >= today) return 'today';
+  if (dayStart >= yesterday) return 'yesterday';
+  return 'earlier';
+}
+
 function NotificationsPage({ open, onClose }) {
+  const [items, setItems] = React.useState([]);
+  const [loading, setLoading] = React.useState(false);
+  // Snapshot lastSeen at the moment we open so unread dots stay stable while
+  // viewing — only bump the stored value on close.
+  const [lastSeenAtOpen, setLastSeenAtOpen] = React.useState(0);
+
+  React.useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setLoading(true);
+    const stored = parseInt(localStorage.getItem(LAST_SEEN_KEY) || '0', 10) || 0;
+    setLastSeenAtOpen(stored);
+    (async () => {
+      try {
+        const { listNotifications } = await import('./api');
+        const data = await listNotifications();
+        if (!cancelled) setItems(Array.isArray(data) ? data : []);
+      } catch (e) {
+        console.warn('[notif] fetch failed', e);
+        if (!cancelled) setItems([]);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [open]);
+
+  // On close, advance lastSeen to the newest item we showed.
+  const handleClose = React.useCallback(() => {
+    if (items.length > 0) {
+      const newest = Math.max(...items.map(n => new Date(n.created_at).getTime()));
+      const prev = parseInt(localStorage.getItem(LAST_SEEN_KEY) || '0', 10) || 0;
+      if (newest > prev) localStorage.setItem(LAST_SEEN_KEY, String(newest));
+    }
+    onClose?.();
+  }, [items, onClose]);
+
   const sections = ['today', 'yesterday', 'earlier'];
-  const grouped = sections.map(s => ({ section: s, items: SAMPLE_NOTIFICATIONS.filter(n => n.section === s) }))
-    .filter(g => g.items.length > 0);
-  const unreadCount = SAMPLE_NOTIFICATIONS.filter(n => n.unread).length;
+  const grouped = sections.map(s => ({
+    section: s,
+    items: items.filter(n => notifSection(n.created_at) === s),
+  })).filter(g => g.items.length > 0);
+  const unreadCount = items.filter(
+    n => new Date(n.created_at).getTime() > lastSeenAtOpen
+  ).length;
   return (
     <div style={{
       position: 'absolute', inset: 0, zIndex: 290,
@@ -1597,7 +1662,7 @@ function NotificationsPage({ open, onClose }) {
         background: 'linear-gradient(to bottom, #000 60%, rgba(0,0,0,0))',
         pointerEvents: 'none',
       }}>
-        <div onClick={onClose} style={{
+        <div onClick={handleClose} style={{
           width: 36, height: 36, borderRadius: 18, background: BF_COLORS.cardHi,
           display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
           pointerEvents: 'auto',
@@ -1628,6 +1693,14 @@ function NotificationsPage({ open, onClose }) {
         WebkitOverflowScrolling: 'touch',
       }}>
         <div style={{ padding: '0 16px', display: 'flex', flexDirection: 'column', gap: 18 }}>
+          {!loading && items.length === 0 && (
+            <div style={{
+              padding: '40px 16px', textAlign: 'center',
+              fontFamily: SF, fontSize: 13, color: BF_COLORS.sub,
+            }}>
+              nothing yet — you're all caught up
+            </div>
+          )}
           {grouped.map(g => (
             <div key={g.section}>
               <div style={{
@@ -1636,37 +1709,40 @@ function NotificationsPage({ open, onClose }) {
                 padding: '0 8px 10px',
               }}>{g.section}</div>
               <List>
-                {g.items.map(n => (
-                  <ListRow
-                    key={n.id}
-                    leading={
-                      <div style={{ position: 'relative' }}>
-                        <Avatar initial={n.actor.initial} color={n.actor.color} size={36} />
-                        <div style={{ position: 'absolute', bottom: -2, right: -2 }}>
-                          <NotifGlyph kind={n.kind} />
+                {g.items.map(n => {
+                  const isUnread = new Date(n.created_at).getTime() > lastSeenAtOpen;
+                  return (
+                    <ListRow
+                      key={n.id}
+                      leading={
+                        <div style={{ position: 'relative' }}>
+                          <Avatar initial={n.actor.initial} color={n.actor.color} size={36} />
+                          <div style={{ position: 'absolute', bottom: -2, right: -2 }}>
+                            <NotifGlyph kind={n.kind} />
+                          </div>
                         </div>
-                      </div>
-                    }
-                    title={
-                      <span>
-                        <span style={{ fontWeight: 700 }}>{n.actor.name}</span>{' '}
-                        <span style={{ color: BF_COLORS.sub, fontWeight: 500 }}>{n.title}</span>
-                      </span>
-                    }
-                    titleAfter={n.unread ? (
-                      <div style={{
-                        width: 7, height: 7, borderRadius: 4,
-                        background: BF_COLORS.coral, marginLeft: 6,
-                      }} />
-                    ) : null}
-                    sub={n.sub}
-                    trailing={
-                      <span style={{ fontFamily: SF, fontSize: 12, color: BF_COLORS.sub }}>
-                        {n.time}
-                      </span>
-                    }
-                  />
-                ))}
+                      }
+                      title={
+                        <span>
+                          <span style={{ fontWeight: 700 }}>{n.actor.name}</span>{' '}
+                          <span style={{ color: BF_COLORS.sub, fontWeight: 500 }}>{n.title}</span>
+                        </span>
+                      }
+                      titleAfter={isUnread ? (
+                        <div style={{
+                          width: 7, height: 7, borderRadius: 4,
+                          background: BF_COLORS.coral, marginLeft: 6,
+                        }} />
+                      ) : null}
+                      sub={n.sub}
+                      trailing={
+                        <span style={{ fontFamily: SF, fontSize: 12, color: BF_COLORS.sub }}>
+                          {shortAgo(n.created_at)}
+                        </span>
+                      }
+                    />
+                  );
+                })}
               </List>
             </div>
           ))}
@@ -1842,7 +1918,7 @@ function FeedScreenV2({ onOpenPost }) {
 // Greeting + per-housemate balance hero, 3 quick actions, incoming
 // requests, this-month spend summary, completed payments.
 
-function HomeGreeting({ onProfile, onNotifications, me, house }) {
+function HomeGreeting({ onProfile, onNotifications, notifUnreadCount = 0, me, house }) {
   const hour = new Date().getHours();
   const greet = hour < 12 ? 'morning' : hour < 18 ? 'afternoon' : 'evening';
   const firstName = me?.name || 'there';
@@ -1869,7 +1945,9 @@ function HomeGreeting({ onProfile, onNotifications, me, house }) {
           <svg width="17" height="19" viewBox="0 0 17 19" fill="none">
             <path d="M8.5 1.5C5.7 1.5 3.5 3.7 3.5 6.5v3l-1.5 2.5h13l-1.5-2.5v-3c0-2.8-2.2-5-5-5zM6.5 15a2 2 0 004 0" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
           </svg>
-          <div style={{ position: 'absolute', top: 8, right: 10, width: 7, height: 7, borderRadius: 4, background: BF_COLORS.coral, border: '1.5px solid #000' }} />
+          {notifUnreadCount > 0 && (
+            <div style={{ position: 'absolute', top: 8, right: 10, width: 7, height: 7, borderRadius: 4, background: BF_COLORS.coral, border: '1.5px solid #000' }} />
+          )}
         </div>
         <div onClick={onProfile} style={{ cursor: onProfile ? 'pointer' : 'default' }}>
           <Avatar initial={initial} color={avatarColor} size={36} />
@@ -2040,6 +2118,181 @@ function QuickActions() {
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ── full-tab regulars list (bottom-nav 'regular') ─────────────────────
+// Same data as the home Regulars block, but every row + a monthly total
+// summary at the top so the user sees what the household pays per month.
+function RegularsScreen({ regulars, onOpen }) {
+  const monthly = (regulars || []).reduce((s, r) => s + Number(r.amount || 0), 0)
+  const months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec']
+  const labelFor = (r) => {
+    const d = r.days_until_due
+    if (d === 0) return 'today'
+    if (d === 1) return 'tomorrow'
+    if (d > 1 && d <= 5) return `in ${d} days`
+    const dt = new Date(r.next_due)
+    return `${dt.getDate()} ${months[dt.getMonth()]}`
+  }
+  // Reshape a Regular row into the `planned` item shape ItemPage already
+  // renders nicely (schedule timeline, split breakdown, etc.).
+  const toPlanned = (r) => ({
+    id: r.id,
+    type: 'planned',
+    emoji: r.emoji,
+    color: r.color,
+    title: r.title,
+    sub: `monthly · day ${r.billing_day}`,
+    amt: Number(r.amount),
+    days: r.days_until_due,
+  })
+  return (
+    <div style={{ background: BF_COLORS.bg, minHeight: '100%', paddingTop: 62 }}>
+      <div style={{ padding: '10px 20px 18px' }}>
+        <div style={{ fontFamily: SF, fontSize: 13, color: BF_COLORS.sub, fontWeight: 500 }}>
+          recurring · monthly
+        </div>
+        <div style={{
+          fontFamily: SFR, fontSize: 26, fontWeight: 800, color: BF_COLORS.text,
+          letterSpacing: -0.6, marginTop: 2,
+        }}>
+          regulars
+        </div>
+      </div>
+      <div style={{ padding: '0 20px 18px' }}>
+        <div style={{
+          background: BF_COLORS.card, borderRadius: 22, padding: 16,
+          border: `0.5px solid ${BF_COLORS.hairline}`,
+        }}>
+          <div style={{
+            fontFamily: SF, fontSize: 12, color: BF_COLORS.sub, fontWeight: 500,
+            textTransform: 'uppercase', letterSpacing: 0.5,
+          }}>
+            monthly total
+          </div>
+          <div style={{ marginTop: 4 }}>
+            <Euro amount={monthly} big={28} small={16} />
+          </div>
+          <div style={{
+            fontFamily: SF, fontSize: 12, color: BF_COLORS.sub, marginTop: 4,
+          }}>
+            {regulars?.length || 0} bill{regulars?.length === 1 ? '' : 's'} on autopilot
+          </div>
+        </div>
+      </div>
+      <div style={{ padding: '0 20px 200px' }}>
+        {(!regulars || regulars.length === 0) ? (
+          <div style={{
+            padding: '20px 16px', borderRadius: 16,
+            background: 'rgba(255,255,255,0.03)',
+            fontFamily: SF, fontSize: 13, color: BF_COLORS.sub, textAlign: 'center',
+          }}>
+            no regulars yet.
+          </div>
+        ) : (
+          <List>
+            {regulars.map((r) => (
+              <ListRow
+                key={r.id}
+                onClick={() => onOpen?.(toPlanned(r))}
+                leading={
+                  <div style={{
+                    minWidth: 64, height: 40, borderRadius: 12, padding: '0 10px',
+                    background: `${r.color || BF_COLORS.amber}22`,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}>
+                    <span style={{
+                      fontFamily: SFR, fontSize: 11, fontWeight: 700, color: r.color || BF_COLORS.amber,
+                      textTransform: 'lowercase', letterSpacing: 0.2, whiteSpace: 'nowrap',
+                    }}>{labelFor(r)}</span>
+                  </div>
+                }
+                title={`${r.emoji ? r.emoji + ' ' : ''}${r.title}`}
+                sub={`monthly · day ${r.billing_day}`}
+                trailing={
+                  <span style={{
+                    fontFamily: SFR, fontSize: 14, fontWeight: 700, color: BF_COLORS.text,
+                    letterSpacing: -0.2, whiteSpace: 'nowrap',
+                  }}>
+                    €{Number(r.amount).toFixed(2).replace('.', ',')}
+                  </span>
+                }
+              />
+            ))}
+          </List>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── upcoming regular bills ────────────────────────────────────────────
+// Real recurring bills from the backend (rent, utilities, subs).
+// Server already sorts by next_due asc and gives us days_until_due so
+// we just label rows ("today", "tomorrow", "in 3 days", "12 may").
+function Regulars({ regulars, onOpen }) {
+  if (!regulars?.length) return null
+  const months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec']
+  const labelFor = (r) => {
+    const d = r.days_until_due
+    if (d === 0) return 'today'
+    if (d === 1) return 'tomorrow'
+    if (d > 1 && d <= 5) return `in ${d} days`
+    const dt = new Date(r.next_due)
+    return `${dt.getDate()} ${months[dt.getMonth()]}`
+  }
+  // Reshape a Regular row into the `planned` item shape ItemPage already
+  // renders nicely (schedule timeline, split breakdown, etc.).
+  const toPlanned = (r) => ({
+    id: r.id,
+    type: 'planned',
+    emoji: r.emoji,
+    color: r.color,
+    title: r.title,
+    sub: `monthly · day ${r.billing_day}`,
+    amt: Number(r.amount),
+    days: r.days_until_due,
+  })
+  return (
+    <div style={{ padding: '0 20px 22px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, gap: 12 }}>
+        <div style={{ fontFamily: SFR, fontSize: 17, fontWeight: 700, color: BF_COLORS.text, letterSpacing: -0.3 }}>
+          regulars
+        </div>
+        <span style={{ fontFamily: SF, fontSize: 13, color: BF_COLORS.sub, fontWeight: 500 }}>see all</span>
+      </div>
+      <List>
+        {regulars.slice(0, 5).map((r) => (
+          <ListRow
+            key={r.id}
+            onClick={() => onOpen?.(toPlanned(r))}
+            leading={
+              <div style={{
+                minWidth: 64, height: 40, borderRadius: 12, padding: '0 10px',
+                background: `${r.color || BF_COLORS.amber}22`,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                <span style={{
+                  fontFamily: SFR, fontSize: 11, fontWeight: 700, color: r.color || BF_COLORS.amber,
+                  textTransform: 'lowercase', letterSpacing: 0.2, whiteSpace: 'nowrap',
+                }}>{labelFor(r)}</span>
+              </div>
+            }
+            title={`${r.emoji ? r.emoji + ' ' : ''}${r.title}`}
+            sub={`monthly · day ${r.billing_day}`}
+            trailing={
+              <span style={{
+                fontFamily: SFR, fontSize: 14, fontWeight: 700, color: BF_COLORS.text,
+                letterSpacing: -0.2, whiteSpace: 'nowrap',
+              }}>
+                €{Number(r.amount).toFixed(2).replace('.', ',')}
+              </span>
+            }
+          />
+        ))}
+      </List>
     </div>
   );
 }
@@ -2351,6 +2604,94 @@ function Requests({ onOpen, onAccept, onDecline, me, splits }) {
               onAccept={handle('accept', r)}
               onDecline={handle('decline', r)}
               pending={pending[r.id]}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── owed to me — outgoing SplitRequests still pending on others ─────
+// Symmetrical to `Requests` above, but filters for rows where I'm the
+// payer and the debtor hasn't accepted yet. Tap → detail page; no inline
+// accept/decline (that's the debtor's call). The peer card shows the
+// debtor's name + the amount they owe me, so I can scan in one glance.
+function OwedToMe({ onOpen, me, splits, housemates }) {
+  const peerColor = React.useCallback((id) => {
+    const m = (housemates || []).find(h => h.id === id);
+    return m?.color || BF_COLORS.amber;
+  }, [housemates]);
+  const peerName = React.useCallback((id) => {
+    const m = (housemates || []).find(h => h.id === id);
+    return m?.name || 'someone';
+  }, [housemates]);
+
+  const rows = React.useMemo(() => {
+    if (!me?.id || !splits?.length) return [];
+    const out = [];
+    for (const s of splits) {
+      if (s.payer_id !== me.id) continue;
+      for (const r of (s.requests || [])) {
+        if (r.status !== 'pending') continue;
+        out.push({
+          id: r.id,
+          type: 'request',
+          from: peerName(r.debtor_id),
+          fromColor: peerColor(r.debtor_id),
+          ago: relativeAgo(s.created_at),
+          title: s.title || 'request',
+          note: s.note || '',
+          amt: Number(r.amount),
+          total: Number(s.total),
+          split: s,
+          request: r,
+        });
+      }
+    }
+    return out;
+  }, [me, splits, peerColor, peerName]);
+
+  return (
+    <div style={{ padding: '0 20px 22px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, gap: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ fontFamily: SFR, fontSize: 17, fontWeight: 700, color: BF_COLORS.text, letterSpacing: -0.3, whiteSpace: 'nowrap' }}>
+            owed to you
+          </div>
+          {rows.length > 0 && (
+            <div style={{
+              minWidth: 20, height: 20, borderRadius: 10, padding: '0 6px',
+              background: BF_COLORS.lime,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontFamily: SFR, fontSize: 11, fontWeight: 800, color: '#000',
+            }}>{rows.length}</div>
+          )}
+        </div>
+      </div>
+      {rows.length === 0 ? (
+        <div style={{
+          padding: '20px 16px', borderRadius: 16,
+          background: 'rgba(255,255,255,0.03)',
+          fontFamily: SF, fontSize: 13, color: BF_COLORS.sub,
+          textAlign: 'center', letterSpacing: -0.1,
+        }}>
+          nothing pending — everyone's paid you up.
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {rows.map((r, i) => (
+            <ExpenseCard
+              key={i}
+              from={{ name: r.from, color: r.fromColor }}
+              verb="owes you"
+              ago={r.ago}
+              amount={r.amt}
+              emoji={r.emoji}
+              title={r.title}
+              note={r.note}
+              onClick={() => onOpen?.(r)}
+              showActions={false}
             />
           ))}
         </div>
@@ -2914,7 +3255,7 @@ function EditableText({ value, onChange, size = 22, weight = 700, color, placeho
 // Accepts live `scan` + `housemates` from the backend. Falls back to the
 // mock receipt for offline previews so the UI still runs without the api.
 function ReviewScreen({
-  onSend, onBack, layout = 'list', chatty = false, aiOpen = false,
+  onSend, onBack, layout = 'list', chatty = false, aiOpen = false, aiTail,
   scan, housemates,
 }) {
   // Map backend housemates → the {id, name, initial, color, isMe} shape the
@@ -3155,6 +3496,7 @@ function ReviewScreen({
 
         {/* Sticky send + AI chat */}
         <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, padding: '18px 20px 36px', background: 'linear-gradient(to top, #000 40%, rgba(0,0,0,0.85) 75%, rgba(0,0,0,0))', display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {!aiOpen && aiTail && <AIPreview tail={aiTail} />}
           <ChatBar
             aiOpen={aiOpen}
             placeholder={
@@ -3241,7 +3583,7 @@ function ScanFlow({
   if (phase === 'review') {
     return (
       <ReviewScreen
-        layout={reviewLayout} chatty={aiChatty} aiOpen={aiOpen}
+        layout={reviewLayout} chatty={aiChatty} aiOpen={aiOpen} aiTail={aiTail}
         scan={scan} housemates={housemates}
         onBack={() => setPhase('camera')}
         onSend={onFinalize}
@@ -3326,7 +3668,7 @@ function QuickActionsWired({ onScan, onRequest, onSplit }) {
   );
 }
 
-function HomeScreen({ onScan, onOpen, onAccept, onDecline, onRequest, onSplit, onProfile, onNotifications, me, house, splits, payments }) {
+function HomeScreen({ onScan, onOpen, onAccept, onDecline, onRequest, onSplit, onProfile, onNotifications, notifUnreadCount = 0, me, house, splits, payments, regulars, housemates }) {
   React.useEffect(() => {
     registry.register('home', () => ({
       balance: me?.balance ?? null,
@@ -3341,11 +3683,13 @@ function HomeScreen({ onScan, onOpen, onAccept, onDecline, onRequest, onSplit, o
 
   return (
     <div style={{ background: BF_COLORS.bg, minHeight: '100%', paddingTop: 62 }}>
-      <HomeGreeting onProfile={onProfile} onNotifications={onNotifications} me={me} house={house} />
+      <HomeGreeting onProfile={onProfile} onNotifications={onNotifications} notifUnreadCount={notifUnreadCount} me={me} house={house} />
       <BalanceHero me={me} house={house} splits={splits} />
       <QuickActionsWired onScan={onScan} onRequest={onRequest} onSplit={onSplit} />
       <div style={{ height: 40 }} />
       <Requests onOpen={onOpen} onAccept={onAccept} onDecline={onDecline} me={me} splits={splits} />
+      <OwedToMe onOpen={onOpen} me={me} splits={splits} housemates={housemates} />
+      <Regulars regulars={regulars} onOpen={onOpen} />
       <SpendSummary payments={payments} />
       <Completed onOpen={onOpen} payments={payments} me={me} />
       {/* spacer for the absolutely-positioned root Dock */}
@@ -3357,6 +3701,159 @@ function HomeScreen({ onScan, onOpen, onAccept, onDecline, onRequest, onSplit, o
 
 
 
+// ═══ ProfileMemorySheet — slide-up review for AI-proposed profile MD ═══
+// Opens when the agent emits an `update_profile` action. The agent passes a
+// single `proposedAdd` line; we fetch the existing file and pre-append the
+// new line so the user sees existing content + the addition pinned at the
+// bottom, ready to edit/save.
+function ProfileMemorySheet({ open, proposedAdd, onClose, onSaved }) {
+  const [text, setText] = React.useState('');
+  const [savedText, setSavedText] = React.useState('');
+  const [saving, setSaving] = React.useState(false);
+  const [err, setErr] = React.useState(null);
+  const prevOpen = React.useRef(false);
+  React.useEffect(() => {
+    if (open && !prevOpen.current) {
+      setErr(null);
+      // Fetch existing file, then append the proposed line at the bottom.
+      getMyProfile().then(d => {
+        const existing = (d?.text || '').replace(/\s+$/, '');
+        setSavedText(d?.text || '');
+        const add = (proposedAdd || '').trim();
+        if (!add) {
+          setText(existing);
+          return;
+        }
+        const sep = existing ? '\n' : '';
+        setText(existing + sep + add + '\n');
+      }).catch(() => {
+        setSavedText('');
+        setText((proposedAdd || '').trim() + '\n');
+      });
+    }
+    prevOpen.current = open;
+  }, [open, proposedAdd]);
+
+  const isDirty = text !== savedText;
+  const canSave = text.trim().length > 0 && isDirty && !saving;
+
+  const handleSave = async () => {
+    if (!canSave) return;
+    setSaving(true); setErr(null);
+    try {
+      await putMyProfile(text);
+      setSavedText(text);
+      onSaved?.(text);
+      onClose?.();
+    } catch (e) {
+      setErr(e?.body?.detail || e.message || 'save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{
+      position: 'absolute', inset: 0, zIndex: 305,
+      background: BF_COLORS.bg,
+      transform: open ? 'translateY(0)' : 'translateY(100%)',
+      transition: 'transform 380ms cubic-bezier(0.32, 0.72, 0, 1)',
+      borderRadius: open ? 0 : '24px 24px 0 0',
+      overflow: 'hidden', display: 'flex', flexDirection: 'column',
+      pointerEvents: open ? 'auto' : 'none',
+    }}>
+      {/* Sticky header */}
+      <div style={{
+        position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20,
+        padding: '54px 16px 12px',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        background: 'linear-gradient(to bottom, #000 60%, rgba(0,0,0,0))',
+        pointerEvents: 'none',
+      }}>
+        <div onClick={onClose} style={{
+          width: 36, height: 36, borderRadius: 18, background: BF_COLORS.cardHi,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+          pointerEvents: 'auto',
+        }}>
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path d="M10 3L4 7l6 4" stroke="#fff" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </div>
+        <div style={{
+          fontFamily: SF, fontSize: 11, color: BF_COLORS.sub, fontWeight: 700,
+          letterSpacing: 0.4, textTransform: 'uppercase',
+        }}>memory</div>
+        <div style={{ width: 36 }} />
+      </div>
+
+      <div style={{
+        flex: 1, overflowY: 'auto',
+        paddingTop: 96, paddingBottom: 60,
+        overscrollBehavior: 'contain',
+        WebkitOverflowScrolling: 'touch',
+      }}>
+        <div style={{ padding: '0 20px 20px' }}>
+          <div style={{
+            fontFamily: SFR, fontSize: 22, fontWeight: 800,
+            color: BF_COLORS.text, letterSpacing: -0.5,
+          }}>your bunq memory</div>
+          <div style={{
+            fontFamily: SF, fontSize: 13, color: BF_COLORS.sub,
+            marginTop: 6, lineHeight: 1.4,
+          }}>
+            things the agent remembers about you across conversations. edit
+            freely — this is your file.
+          </div>
+        </div>
+
+        <div style={{ padding: '0 16px' }}>
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="# about me&#10;- "
+            spellCheck={false}
+            style={{
+              width: '100%', minHeight: 360, padding: 16,
+              background: BF_COLORS.cardHi, border: 'none',
+              borderRadius: 18,
+              fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
+              fontSize: 13, lineHeight: 1.55, color: BF_COLORS.text,
+              outline: 'none', resize: 'vertical',
+              boxSizing: 'border-box',
+            }}
+          />
+        </div>
+
+        {err && (
+          <div style={{
+            padding: '10px 20px 0',
+            fontFamily: SF, fontSize: 12, color: BF_COLORS.coral,
+          }}>{err}</div>
+        )}
+
+        <div style={{ padding: '20px 16px 24px' }}>
+          <button
+            onClick={handleSave}
+            disabled={!canSave}
+            style={{
+              width: '100%', padding: '14px 16px',
+              borderRadius: 18, border: 'none',
+              background: canSave ? BF_COLORS.green : BF_COLORS.cardHi,
+              color: canSave ? '#000' : BF_COLORS.sub,
+              fontFamily: SF, fontSize: 15, fontWeight: 700,
+              cursor: canSave ? 'pointer' : 'default',
+              transition: 'background 180ms ease',
+            }}
+          >
+            {saving ? 'saving…' : (isDirty ? 'save memory' : 'no changes')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 function friendlyStatus(tool) {
   switch (tool) {
     case 'list_splits':         return 'checking splits…'
@@ -3366,6 +3863,7 @@ function friendlyStatus(tool) {
     case 'get_balance_with':    return 'computing balance…'
     case 'list_requests_with':  return 'reading requests…'
     case 'list_recent_payments':return 'checking payments…'
+    case 'read_my_profile':     return 'reading your memory…'
     case 'emit_action':         return 'preparing…'
     case 'apply_page_patch':    return 'updating page…'
     default:                    return `${tool}…`
@@ -3378,6 +3876,9 @@ function actionLabel(ev) {
     case 'split':       return 'review split'
     case 'pay_request': return 'open'
     case 'scan':        return 'open camera'
+    case 'settle_up':   return 'review settle'
+    case 'comment':     return 'open thread'
+    case 'update_profile': return 'review memory'
     default:            return 'open'
   }
 }
@@ -3413,9 +3914,10 @@ function BunqFlatmateApp() {
   // Splits in the house + my settled payments (the Home sections feed off these).
   const { splits, refresh: refreshSplits } = useSplits({ enabled });
   const { payments, refresh: refreshPayments } = usePayments({ enabled });
+  const { regulars, refresh: refreshRegulars } = useRegulars({ enabled });
   React.useEffect(() => {
     if (enabled) {
-      refreshHouse(); refreshMyBunq(); refreshSplits(); refreshPayments();
+      refreshHouse(); refreshMyBunq(); refreshSplits(); refreshPayments(); refreshRegulars();
     }
   }, [enabled, refreshHouse, refreshMyBunq, refreshSplits, refreshPayments]);
   const [consentOpen, setConsentOpen] = React.useState(false);
@@ -3482,15 +3984,41 @@ function BunqFlatmateApp() {
       setScanPhase('processing');
     }
   }, [scanData, scanPostContext]);
-  const [tab, setTab] = React.useState('home'); // 'home' | 'feed' | 'subs' | 'mates'
+  const [tab, setTab] = React.useState('home'); // 'home' | 'feed' | 'regular' | 'mates'
   const [selectedItem, setSelectedItem] = React.useState(null);
   const [itemOpen, setItemOpen] = React.useState(false);
   const openItem = (it) => { setSelectedItem(it); requestAnimationFrame(() => setItemOpen(true)); };
   const closeItem = () => { setItemOpen(false); setTimeout(() => setSelectedItem(null), 400); };
+
+  // ── AI action lifecycle helpers ──────────────────────────────────────
+  // `consumeAction(id)` collapses the matching action card to a muted "done"
+  // pill once the user-driven completion fires (form submit, settle done,
+  // accept, save). Per-surface refs hold the pending action id until that
+  // completion runs. Declared here (before any surface handler that calls
+  // them) so React's useCallback deps resolve without TDZ.
+  const formActionIdRef = React.useRef(null);
+  const itemActionIdRef = React.useRef(null);
+  const settleActionIdRef = React.useRef(null);
+  const profileMemoryActionIdRef = React.useRef(null);
+  const consumeAction = React.useCallback((actionId) => {
+    if (!actionId) return;
+    setAiMessages(ms => ms.map(m => (
+      m.action && m.action.id === actionId
+        ? { ...m, action: { ...m.action, consumed: true } }
+        : m
+    )));
+    setAiTail(t => (
+      t && t.action && t.action.id === actionId
+        ? { ...t, action: { ...t.action, consumed: true } }
+        : t
+    ));
+  }, []);
+
   // Fetches the parent split fresh from the DB by request_id and opens the
   // item page. Avoids relying on the in-memory `splits` cache so the AI flow
   // works even for splits the client hasn't loaded yet (e.g. just-created).
-  const openItemForRequest = async (requestId) => {
+  const openItemForRequest = async (requestId, actionId) => {
+    itemActionIdRef.current = actionId || null;
     let split
     try {
       split = await getRequest(requestId)
@@ -3528,20 +4056,53 @@ function BunqFlatmateApp() {
     await acceptSplitRequest(it.split.id, it.request.id);
     refreshSplits(); refreshPayments(); refreshMyBunq();
     closeItem();
-  }, [refreshSplits, refreshPayments, refreshMyBunq]);
+    const aid = itemActionIdRef.current; itemActionIdRef.current = null;
+    consumeAction(aid);
+  }, [refreshSplits, refreshPayments, refreshMyBunq, consumeAction]);
   const declineItem = React.useCallback(async (it) => {
     if (it?.type !== 'request' || !it?.split?.id || !it?.request?.id) return;
     await declineSplitRequest(it.split.id, it.request.id);
     refreshSplits();
     closeItem();
-  }, [refreshSplits]);
+    const aid = itemActionIdRef.current; itemActionIdRef.current = null;
+    consumeAction(aid);
+  }, [refreshSplits, consumeAction]);
   const [selectedMate, setSelectedMate] = React.useState(null);
   const [mateOpen, setMateOpen] = React.useState(false);
   const openMate = (m) => { setSelectedMate(m); requestAnimationFrame(() => setMateOpen(true)); };
   const closeMate = () => { setMateOpen(false); setTimeout(() => setSelectedMate(null), 400); };
+
+  // Settle-up confirm sheet — opened from MatePage's button or from the
+  // AI's emit_action 'settle_up' card. The peer object carries id+name+color
+  // (resolved from housemates when an action card fires).
+  const [settlePeer, setSettlePeer] = React.useState(null);
+  const [settleOpen, setSettleOpen] = React.useState(false);
+  const openSettle = (peer, actionId) => {
+    settleActionIdRef.current = actionId || null;
+    setSettlePeer(peer);
+    requestAnimationFrame(() => setSettleOpen(true));
+  };
+  const closeSettle = () => { setSettleOpen(false); setTimeout(() => setSettlePeer(null), 320); };
+  const onSettleDone = () => {
+    refreshSplits(); refreshPayments(); refreshMyBunq();
+    const aid = settleActionIdRef.current; settleActionIdRef.current = null;
+    consumeAction(aid);
+  };
   const [selectedPost, setSelectedPost] = React.useState(null);
   const [postOpen, setPostOpen] = React.useState(false);
   const openPost = (p) => { setSelectedPost(p); requestAnimationFrame(() => setPostOpen(true)); };
+  // Open a post by id with the comment composer pre-filled. Used by the AI
+  // 'comment' action — the agent prepares the text, the user just taps send.
+  const openPostForComment = async (postId, prefill) => {
+    try {
+      const data = await getPost(postId)
+      const mapped = postFromApi(data)
+      mapped._commentPrefill = prefill || ''
+      openPost(mapped)
+    } catch (e) {
+      console.warn('[ai] openPostForComment: GET /posts failed', postId, e)
+    }
+  };
   const closePost = () => { setPostOpen(false); setTimeout(() => setSelectedPost(null), 400); };
   const onScanForPost = (post) => {
     setScanPostContext({
@@ -3559,9 +4120,35 @@ function BunqFlatmateApp() {
   const [profileOpen, setProfileOpen] = React.useState(false);
   const openProfile = () => setProfileOpen(true);
   const closeProfile = () => setProfileOpen(false);
+  // Profile-memory review sheet — opened by AI 'update_profile' actions.
+  // The agent emits a single line to add; the sheet appends it to existing
+  // content for the user to review/edit before save.
+  const [profileMemoryOpen, setProfileMemoryOpen] = React.useState(false);
+  const [profileMemoryAdd, setProfileMemoryAdd] = React.useState('');
+  // Action-id ref for the profile-memory sheet (declared above with the rest).
+  const openProfileMemory = (addLine, actionId) => {
+    setProfileMemoryAdd(addLine || '');
+    profileMemoryActionIdRef.current = actionId || null;
+    requestAnimationFrame(() => setProfileMemoryOpen(true));
+  };
+  const closeProfileMemory = () => setProfileMemoryOpen(false);
   const [notifOpen, setNotifOpen] = React.useState(false);
+  const [notifUnreadCount, setNotifUnreadCount] = React.useState(0);
+  const refreshNotifUnread = React.useCallback(async () => {
+    try {
+      const { listNotifications } = await import('./api');
+      const data = await listNotifications();
+      const lastSeen = parseInt(localStorage.getItem('bf:lastSeenNotifAt') || '0', 10) || 0;
+      const n = (data || []).filter(x => new Date(x.created_at).getTime() > lastSeen).length;
+      setNotifUnreadCount(n);
+    } catch {
+      // Surface zero on auth/network errors — the badge is cosmetic.
+      setNotifUnreadCount(0);
+    }
+  }, []);
   const openNotif = () => setNotifOpen(true);
-  const closeNotif = () => setNotifOpen(false);
+  const closeNotif = () => { setNotifOpen(false); refreshNotifUnread(); };
+  React.useEffect(() => { refreshNotifUnread(); }, [refreshNotifUnread]);
   // request / split sheet — same component, two modes
   const [formMode, setFormMode] = React.useState(null); // null | 'request' | 'split'
   const [formOpen, setFormOpen] = React.useState(false);
@@ -3569,6 +4156,7 @@ function BunqFlatmateApp() {
   const openForm = (m, opts = {}) => {
     setFormMode(m)
     setFormPrefill(opts.prefill || null)
+    formActionIdRef.current = opts.actionId || null
     requestAnimationFrame(() => setFormOpen(true))
   };
   const closeForm = () => {
@@ -3673,14 +4261,17 @@ function BunqFlatmateApp() {
               setAiTail({ kind: 'error', text: ev.message || 'agent error' })
               break
             case 'done': {
-              const wired = pendingAction
-                ? wireAction(pendingAction, (a) => handleAiAction(a))
+              const actionId = pendingAction
+                ? `act-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
                 : null
-              // Tools are intentionally NOT persisted onto the finalized AI
-              // message — once the response lands, the trace is debug noise.
-              // It stays available during streaming via aiTail.
+              const wired = pendingAction
+                ? { ...wireAction(pendingAction, (a) => handleAiAction({ ...a, id: actionId })), id: actionId }
+                : null
+              // Persist the tool trace onto the AI message so the full history
+              // of actions stays inspectable inside the AI chat window.
               setAiMessages(m => [...m, {
                 role: 'ai', text: textBuf, action: wired,
+                tools: toolCalls.length ? toolCalls : undefined,
               }])
               setAiTail({ kind: 'done', text: textBuf, action: wired })
               break
@@ -3710,10 +4301,30 @@ function BunqFlatmateApp() {
     // overlay everything else.
     setAiOpen(false)
     switch (a.kind) {
-      case 'request':     openForm('request', { prefill: a.payload }); break
-      case 'split':       openForm('split',   { prefill: a.payload }); break
-      case 'pay_request': openItemForRequest(a.payload.request_id); break
-      case 'scan':        setScanPhase('camera'); break
+      case 'request':     openForm('request', { prefill: a.payload, actionId: a.id }); break
+      case 'split':       openForm('split',   { prefill: a.payload, actionId: a.id }); break
+      case 'pay_request': openItemForRequest(a.payload.request_id, a.id); break
+      // No clean "completion" event for these — opening the surface IS the
+      // user's response, so consume on tap.
+      case 'scan':        setScanPhase('camera'); consumeAction(a.id); break
+      case 'comment':     openPostForComment(a.payload.post_id, a.payload.text); consumeAction(a.id); break
+      case 'update_profile': openProfileMemory(a.payload?.add || '', a.id); break
+      case 'settle_up': {
+        // Resolve the peer from the housemates payload so the sheet can
+        // show their name/color before the preview round-trip resolves.
+        const pid = a.payload?.peer_id;
+        const peer = (housemates || []).find(h => h.id === pid);
+        if (peer) {
+          openSettle({
+            id: peer.id, name: peer.name,
+            color: peer.color || BF_COLORS.amber,
+          }, a.id);
+        } else {
+          // Fallback: open with bare id; SettleSheet will still fetch preview.
+          openSettle({ id: pid, name: 'mate', color: BF_COLORS.amber }, a.id);
+        }
+        break;
+      }
       default:            /* unknown kind — leave AI open */ setAiOpen(true)
     }
   };
@@ -3789,6 +4400,7 @@ function BunqFlatmateApp() {
                 <HomeScreen
                   onProfile={openProfile}
                   onNotifications={openNotif}
+                  notifUnreadCount={notifUnreadCount}
                   onScan={() => setScanPhase('camera')}
                   onOpen={openItem}
                   onAccept={acceptItem}
@@ -3799,20 +4411,13 @@ function BunqFlatmateApp() {
                   house={house}
                   splits={splits}
                   payments={payments}
+                  regulars={regulars}
+                  housemates={housemates}
                 />
               )}
               {tab === 'mates' && <MatesScreen onOpenMate={openMate} me={me} housemates={housemates} splits={splits} />}
               {tab === 'feed' && <FeedScreenV2 onOpenPost={openPost} />}
-              {tab === 'subs' && (
-                <div style={{
-                  background: BF_COLORS.bg, minHeight: '100%',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  color: BF_COLORS.sub, fontFamily: SF, fontSize: 14, padding: 40,
-                  textAlign: 'center',
-                }}>
-                  subs — coming soon
-                </div>
-              )}
+              {tab === 'regular' && <RegularsScreen regulars={regulars} onOpen={openItem} />}
             </div>
           )}
           <ThreadPage post={selectedPost} open={postOpen} onClose={closePost} onOpenItem={openItem} housemates={housemates} onScanForPost={onScanForPost} />
@@ -3826,6 +4431,16 @@ function BunqFlatmateApp() {
             onRefreshBunq={refreshMyBunq}
           />
           <NotificationsPage open={notifOpen} onClose={closeNotif} />
+          <ProfileMemorySheet
+            open={profileMemoryOpen}
+            proposedAdd={profileMemoryAdd}
+            onClose={closeProfileMemory}
+            onSaved={() => {
+              const aid = profileMemoryActionIdRef.current;
+              profileMemoryActionIdRef.current = null;
+              consumeAction(aid);
+            }}
+          />
           <ItemPage
             item={selectedItem}
             open={itemOpen}
@@ -3839,8 +4454,15 @@ function BunqFlatmateApp() {
             open={mateOpen}
             onClose={closeMate}
             onOpenItem={openItem}
+            onSettle={openSettle}
             me={me}
             splits={splits}
+          />
+          <SettleSheet
+            peer={settlePeer}
+            open={settleOpen}
+            onClose={closeSettle}
+            onDone={onSettleDone}
           />
           <RequestSplitForm
             mode={formMode}
@@ -3854,9 +4476,11 @@ function BunqFlatmateApp() {
               refreshSplits();
               refreshPayments();
               closeForm();
+              const aid = formActionIdRef.current; formActionIdRef.current = null;
+              consumeAction(aid);
             }}
           />
-          {!scanPhase && !itemOpen && !mateOpen && !formOpen && !postOpen && !profileOpen && !notifOpen && (
+          {!scanPhase && !itemOpen && !mateOpen && !formOpen && !postOpen && !profileOpen && !notifOpen && !profileMemoryOpen && (
             <Dock
               active={tab}
               onTab={setTab}

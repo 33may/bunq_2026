@@ -1,5 +1,5 @@
 import React from 'react'
-import { BF_COLORS, SF, SFR, AIBadge, AIActionCard, PrettyToolResult, PrettyArgs } from './components'
+import { BF_COLORS, SF, SFR, AIBadge, AIActionCard, PrettyToolResult, PrettyArgs, AIThinkingDots } from './components'
 
 // AIWindow — slide-up sheet that sits between the top of the device and the
 // app-root Dock. The Dock's ChatBar acts as the composer (its arrow-up flips
@@ -101,7 +101,7 @@ export function AIWindow({ open, onClose, messages, liveTail }) {
 
           {liveTail && (
             <Bubble role="ai" tools={liveTail.tools} live={liveTail.kind}>
-              {liveTail.kind === 'thinking' ? '…' : (liveTail.text || '')}
+              {liveTail.kind === 'thinking' ? <AIThinkingDots /> : (liveTail.text || '')}
             </Bubble>
           )}
 
@@ -142,7 +142,6 @@ function Bubble({ role, children, action, tools, live }) {
         border: me ? 'none' : `0.5px solid ${BF_COLORS.hairline}`,
         fontFamily: SF, fontSize: 14, lineHeight: 1.4,
         color: BF_COLORS.text, letterSpacing: -0.1,
-        opacity: live === 'thinking' ? 0.6 : 1,
       }}>
         {children}
         {streaming && (

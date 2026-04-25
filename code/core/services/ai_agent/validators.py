@@ -10,7 +10,10 @@ from __future__ import annotations
 from decimal import Decimal
 
 
-_VALID_ACTION_KINDS = {"request", "split", "pay_request", "scan"}
+_VALID_ACTION_KINDS = {
+    "request", "split", "pay_request", "scan", "settle_up", "comment",
+    "update_profile",
+}
 _VALID_PATCH_KINDS = {"receipt_assignments", "request_form_fill"}
 
 
@@ -55,6 +58,27 @@ def validate_action_payload(kind: str, payload: dict) -> str | None:
 
     if kind == "scan":
         return None  # empty payload is fine
+
+    if kind == "settle_up":
+        if "peer_id" not in payload or not payload["peer_id"]:
+            return _err("settle_up: peer_id is required")
+        return None
+
+    if kind == "comment":
+        if "post_id" not in payload or not payload["post_id"]:
+            return _err("comment: post_id is required")
+        text = payload.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return _err("comment: text must be a non-empty string")
+        return None
+
+    if kind == "update_profile":
+        add = payload.get("add")
+        if not isinstance(add, str) or not add.strip():
+            return _err("update_profile: add must be a non-empty string")
+        if len(add) > 500:
+            return _err("update_profile: add too long (max 500 chars — one line)")
+        return None
 
     return _err(f"unknown action kind: {kind!r}")  # unreachable
 

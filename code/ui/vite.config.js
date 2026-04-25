@@ -18,6 +18,8 @@ export default defineConfig({
       '/posts': backend,
       '/ai': backend,
       '/chats': backend,
+      '/regulars': backend,
+      '/settle-up': backend,
       // websocket — `ws: true` upgrades the connection in dev
       '/ws': { target: backend, ws: true, changeOrigin: true },
       // auth / session

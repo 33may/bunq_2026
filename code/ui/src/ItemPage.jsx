@@ -3,6 +3,7 @@ import { BF_COLORS, SF, SFR, Avatar, timeLabel, SplitTracker, Chat, CardRow } fr
 import * as registry from './ai/pageContextRegistry'
 import { log } from './ai/log'
 import { useChat } from './hooks/useChat'
+import { scanImageUrl, uploadSplitReceipt } from './api'
 // (we don't import tokens.js directly because BF_COLORS/SF/SFR are re-imported via components)
 
 // ─────────────────────────────────────────────────────────────
@@ -18,6 +19,113 @@ const TYPE_META = {
   insight:      { label: 'insight',      color: BF_COLORS.lime },
   completed:    { label: 'completed',    color: BF_COLORS.green },
 };
+
+// ── ReceiptAttachment — show the linked receipt or let the user upload one ──
+// Two states:
+//   • split.source_scan_id present → render thumbnail; tap → fullscreen viewer.
+//   • no scan attached → "attach receipt" tile with hidden file input;
+//     submit POSTs /splits/{id}/receipt and notifies parent to refresh.
+//
+// Anyone on the split (payer or any debtor) can attach. The backend enforces
+// authorization; the UI just exposes the affordance to everyone on the page.
+function ReceiptAttachment({ split, onAttached }) {
+  const [busy, setBusy] = React.useState(false)
+  const [err, setErr] = React.useState(null)
+  const [zoom, setZoom] = React.useState(false)
+  // Local override so a freshly uploaded receipt renders immediately, even
+  // if the parent hasn't propagated the new split shape yet.
+  const [localScanId, setLocalScanId] = React.useState(null)
+  const inputRef = React.useRef(null)
+  if (!split?.id) return null
+  const scanId = localScanId || split.source_scan_id || null
+
+  const onFile = async (e) => {
+    const f = e.target.files?.[0]
+    e.target.value = ''  // reset so re-picking same file fires change again
+    if (!f) return
+    setBusy(true); setErr(null)
+    try {
+      const updated = await uploadSplitReceipt(split.id, f)
+      setLocalScanId(updated?.source_scan_id || null)
+      onAttached?.(updated)
+    } catch (ex) {
+      setErr(ex?.body?.detail || ex.message || 'upload failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (scanId) {
+    const src = scanImageUrl(scanId)
+    return (
+      <div style={{ padding: '0 16px 20px' }}>
+        <div style={{
+          fontFamily: SF, fontSize: 12, fontWeight: 600, color: BF_COLORS.sub,
+          textTransform: 'uppercase', letterSpacing: 0.8, padding: '0 4px 8px',
+        }}>receipt</div>
+        <div onClick={() => setZoom(true)} style={{
+          borderRadius: 16, overflow: 'hidden', cursor: 'zoom-in',
+          background: 'rgba(255,255,255,0.03)',
+          border: `0.5px solid ${BF_COLORS.hairline}`,
+        }}>
+          <img src={src} alt="receipt" style={{
+            display: 'block', width: '100%', maxHeight: 240, objectFit: 'cover',
+          }} />
+        </div>
+        {zoom && (
+          <div onClick={() => setZoom(false)} style={{
+            position: 'fixed', inset: 0, zIndex: 1200,
+            background: 'rgba(0,0,0,0.92)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: 16, cursor: 'zoom-out',
+          }}>
+            <img src={src} alt="receipt" style={{
+              maxWidth: '100%', maxHeight: '100%', borderRadius: 8,
+            }} />
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div style={{ padding: '0 16px 20px' }}>
+      <div
+        onClick={() => !busy && inputRef.current?.click()}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          padding: '12px 14px', borderRadius: 16,
+          background: 'rgba(255,255,255,0.03)',
+          border: `1px dashed ${BF_COLORS.hairline}`,
+          cursor: busy ? 'default' : 'pointer',
+          opacity: busy ? 0.6 : 1,
+        }}
+      >
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" style={{ flexShrink: 0, opacity: 0.7 }}>
+          <rect x="3" y="2" width="12" height="14" rx="2" stroke="#fff" strokeWidth="1.4"/>
+          <path d="M6 6h6M6 9h6M6 12h4" stroke="#fff" strokeWidth="1.4" strokeLinecap="round"/>
+        </svg>
+        <span style={{
+          flex: 1, fontFamily: SF, fontSize: 13, color: BF_COLORS.sub,
+          letterSpacing: -0.1,
+        }}>
+          {err ? err : busy ? 'uploading…' : 'no receipt attached'}
+        </span>
+        <span style={{
+          fontFamily: SF, fontSize: 12, fontWeight: 700, color: BF_COLORS.lime,
+          letterSpacing: -0.1,
+        }}>{busy ? '' : 'attach'}</span>
+      </div>
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/*"
+        onChange={onFile}
+        style={{ display: 'none' }}
+      />
+    </div>
+  )
+}
 
 // generic section header inside the page
 function ItemSection({ title, right, children, pad = true }) {
@@ -146,26 +254,6 @@ function PlannedContent({ item }) {
                 ))}
               </div>
             </div>
-          </div>
-          {/* auto-pay note */}
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 10,
-            padding: '12px 16px',
-            borderTop: `1px solid ${BF_COLORS.hairline}`,
-            background: 'rgba(255,255,255,0.02)',
-          }}>
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{ flexShrink: 0 }}>
-              <circle cx="7" cy="7" r="5.5" stroke={color} strokeWidth="1.3"/>
-              <path d="M7 4v3l2 1.5" stroke={color} strokeWidth="1.3" strokeLinecap="round"/>
-            </svg>
-            <span style={{
-              flex: 1, fontFamily: SF, fontSize: 12.5, color: BF_COLORS.sub, letterSpacing: -0.1,
-            }}>
-              auto-pay is on · charges on due date
-            </span>
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{ opacity: 0.4 }}>
-              <path d="M3 1l4 4-4 4" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
           </div>
         </div>
       </div>
@@ -387,25 +475,8 @@ function RequestContent({ item, meId }) {
         />
       )}
 
-      {/* no-receipt: just a quiet note */}
-      {!item.hasReceipt && (
-        <div style={{ padding: '0 16px 20px' }}>
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 10,
-            padding: '12px 14px', borderRadius: 16,
-            background: 'rgba(255,255,255,0.03)',
-            border: `1px dashed ${BF_COLORS.hairline}`,
-          }}>
-            <svg width="18" height="18" viewBox="0 0 18 18" fill="none" style={{ flexShrink: 0, opacity: 0.5 }}>
-              <rect x="3" y="2" width="12" height="14" rx="2" stroke="#fff" strokeWidth="1.4"/>
-              <path d="M6 6h6M6 9h6M6 12h4" stroke="#fff" strokeWidth="1.4" strokeLinecap="round"/>
-            </svg>
-            <span style={{ fontFamily: SF, fontSize: 13, color: BF_COLORS.sub, letterSpacing: -0.1 }}>
-              no receipt attached
-            </span>
-          </div>
-        </div>
-      )}
+      {/* receipt — thumbnail + zoom when attached, else attach-cta */}
+      {!item.hasReceipt && <ReceiptAttachment split={item.split} />}
 
       {/* status */}
       <ItemSection title="status">
@@ -665,28 +736,8 @@ function CompletedContent({ item }) {
         </div>
       )}
 
-      {/* no-receipt quiet note */}
-      {!item.hasReceipt && (
-        <div style={{ padding: '0 16px 20px' }}>
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 10,
-            padding: '12px 14px', borderRadius: 16,
-            background: 'rgba(255,255,255,0.03)',
-            border: `1px dashed ${BF_COLORS.hairline}`,
-          }}>
-            <svg width="18" height="18" viewBox="0 0 18 18" fill="none" style={{ flexShrink: 0, opacity: 0.5 }}>
-              <rect x="3" y="2" width="12" height="14" rx="2" stroke="#fff" strokeWidth="1.4"/>
-              <path d="M6 6h6M6 9h6M6 12h4" stroke="#fff" strokeWidth="1.4" strokeLinecap="round"/>
-            </svg>
-            <span style={{ flex: 1, fontFamily: SF, fontSize: 13, color: BF_COLORS.sub, letterSpacing: -0.1 }}>
-              no receipt attached
-            </span>
-            <span style={{ fontFamily: SF, fontSize: 12, fontWeight: 600, color: BF_COLORS.text, letterSpacing: -0.1 }}>
-              add
-            </span>
-          </div>
-        </div>
-      )}
+      {/* receipt — thumbnail + zoom when attached, else attach-cta */}
+      {!item.hasReceipt && <ReceiptAttachment split={item.split} />}
 
       {/* payment details */}
       <div style={{ padding: '0 16px 20px' }}>

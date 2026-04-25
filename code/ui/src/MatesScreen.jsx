@@ -2,6 +2,7 @@ import React from 'react'
 import { BF_COLORS, SF, SFR, Avatar, List, ListRow, Chat, CardRow } from './components'
 import * as registry from './ai/pageContextRegistry'
 import { useChat } from './hooks/useChat'
+import { previewSettle, doSettle } from './api'
 
 // Mates list and per-mate detail page. Housemates + balances come from the
 // real backend (/housemates + /splits); 1:1 chat is wired to the
@@ -186,7 +187,7 @@ function NetPill({ net }) {
 // scrolls. New messages auto-stick to the bottom; users that scroll up to
 // read history are not yanked back.
 // ─────────────────────────────────────────────────────────────────────
-export function MatePage({ mate, me, splits, open, onClose, onOpenItem }) {
+export function MatePage({ mate, me, splits, open, onClose, onOpenItem, onSettle }) {
   React.useEffect(() => {
     if (!open || !mate) return
     registry.register('mate_detail', () => ({
@@ -256,6 +257,21 @@ export function MatePage({ mate, me, splits, open, onClose, onOpenItem }) {
             }}>{mate.name}</div>
             <NetSubline net={net} positive={positive} />
           </div>
+          {/* Settle-up button — only when there's something open to net.
+              Tapping opens the immutable confirm sheet. */}
+          {positions.length > 0 && (
+            <button
+              onClick={() => onSettle?.(mate)}
+              style={{
+                padding: '8px 14px', borderRadius: 14, border: 'none',
+                background: BF_COLORS.lime, color: '#000',
+                fontFamily: SFR, fontSize: 13, fontWeight: 800, letterSpacing: -0.1,
+                cursor: 'pointer', whiteSpace: 'nowrap',
+              }}
+            >
+              settle up
+            </button>
+          )}
         </div>
 
         {positions.length > 0 && (
@@ -415,6 +431,195 @@ function KindGlyph({ kind }) {
           <path d="M3 8h7M7 4l-4 4 4 4M11 3v10" stroke={c} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
         </svg>
       )}
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// SettleSheet — slide-up confirm sheet for settle-up.
+//
+// On open we GET /settle-up/{peer}/preview to learn (net, direction,
+// open_count). The amount is IMMUTABLE here — the user just confirms.
+// Tapping the action posts to /settle-up/{peer}, which:
+//   • revokes every open SplitRequest in the pair
+//   • creates ONE new SplitRequest for the net in the right direction
+// On success we call onDone(result) so the host can refresh splits.
+// ─────────────────────────────────────────────────────────────────────
+export function SettleSheet({ peer, open, onClose, onDone }) {
+  const [preview, setPreview] = React.useState(null)
+  const [loading, setLoading] = React.useState(false)
+  const [busy, setBusy]       = React.useState(false)
+  const [error, setError]     = React.useState(null)
+
+  React.useEffect(() => {
+    if (!open || !peer?.id) return
+    setPreview(null); setError(null); setLoading(true)
+    previewSettle(peer.id)
+      .then(setPreview)
+      .catch(e => setError(e?.body?.detail || e?.message || 'failed'))
+      .finally(() => setLoading(false))
+  }, [open, peer?.id])
+
+  const confirm = async () => {
+    if (!peer?.id || busy) return
+    setBusy(true); setError(null)
+    try {
+      const result = await doSettle(peer.id)
+      onDone?.(result)
+      onClose?.()
+    } catch (e) {
+      setError(e?.body?.detail || e?.message || 'failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div style={{
+      position: 'absolute', inset: 0, zIndex: 410,
+      transform: open ? 'translateY(0)' : 'translateY(100%)',
+      transition: 'transform 320ms cubic-bezier(0.32, 0.72, 0, 1)',
+      pointerEvents: open ? 'auto' : 'none',
+      background: 'rgba(0,0,0,0.55)',
+      display: 'flex', flexDirection: 'column', justifyContent: 'flex-end',
+    }}>
+      <div onClick={onClose} style={{ flex: 1 }} />
+      <div style={{
+        background: BF_COLORS.bg, borderTopLeftRadius: 24, borderTopRightRadius: 24,
+        padding: '14px 20px 24px',
+        boxShadow: '0 -12px 48px rgba(0,0,0,0.4)',
+      }}>
+        {/* drag pill */}
+        <div style={{
+          width: 40, height: 4, borderRadius: 2,
+          background: 'rgba(255,255,255,0.2)',
+          margin: '0 auto 18px',
+        }} />
+
+        <div style={{
+          fontFamily: SF, fontSize: 12, color: BF_COLORS.sub, fontWeight: 600,
+          letterSpacing: 0.6, textTransform: 'uppercase',
+        }}>
+          settle up with
+        </div>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 12, marginTop: 6,
+        }}>
+          <Avatar
+            initial={(peer?.name || '?')[0].toUpperCase()}
+            color={peer?.color || BF_COLORS.amber}
+            size={42}
+          />
+          <div style={{
+            fontFamily: SFR, fontSize: 22, fontWeight: 800, color: BF_COLORS.text,
+            letterSpacing: -0.4,
+          }}>{peer?.name || 'someone'}</div>
+        </div>
+
+        <div style={{ marginTop: 18, minHeight: 84 }}>
+          {loading && <Skeleton />}
+          {!loading && preview && <PreviewBlock preview={preview} />}
+          {error && (
+            <div style={{
+              padding: '10px 12px', borderRadius: 12,
+              background: 'rgba(255,77,94,0.10)', border: '0.5px solid rgba(255,77,94,0.32)',
+              fontFamily: SF, fontSize: 12, color: BF_COLORS.coral, marginTop: 10,
+            }}>
+              {error}
+            </div>
+          )}
+        </div>
+
+        <div style={{ display: 'flex', gap: 10, marginTop: 20 }}>
+          <button
+            onClick={onClose}
+            disabled={busy}
+            style={{
+              flex: 1, height: 50, borderRadius: 16, border: 'none',
+              background: 'rgba(255,255,255,0.06)', color: BF_COLORS.text,
+              fontFamily: SF, fontSize: 14, fontWeight: 600,
+              cursor: busy ? 'default' : 'pointer',
+            }}
+          >cancel</button>
+          <button
+            onClick={confirm}
+            disabled={busy || loading || !preview || preview.direction === 'even'}
+            style={{
+              flex: 2, height: 50, borderRadius: 16, border: 'none',
+              background: busy || loading || !preview || preview.direction === 'even'
+                ? 'rgba(255,255,255,0.10)'
+                : BF_COLORS.lime,
+              color: '#000',
+              fontFamily: SFR, fontSize: 15, fontWeight: 800, letterSpacing: -0.2,
+              cursor: busy || loading ? 'default' : 'pointer',
+            }}
+          >
+            {busy ? 'settling…'
+              : preview?.direction === 'even' ? 'already even'
+              : preview ? `settle · €${preview.net_amount.replace('.', ',')}`
+              : 'settle up'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function Skeleton() {
+  return (
+    <div style={{
+      height: 64, borderRadius: 14, background: 'rgba(255,255,255,0.04)',
+      animation: 'settlePulse 1.2s ease-in-out infinite',
+    }}>
+      <style>{`
+        @keyframes settlePulse {
+          0%, 100% { opacity: 0.6; }
+          50%      { opacity: 1; }
+        }
+      `}</style>
+    </div>
+  )
+}
+
+function PreviewBlock({ preview }) {
+  const dir = preview.direction
+  const amt = `€${preview.net_amount.replace('.', ',')}`
+  if (dir === 'even') {
+    return (
+      <div style={{
+        padding: '12px 14px', borderRadius: 14,
+        background: 'rgba(255,255,255,0.03)',
+        fontFamily: SF, fontSize: 13.5, color: BF_COLORS.sub, lineHeight: 1.45,
+      }}>
+        nothing to settle — you're already even.
+        {preview.open_count > 0 && ` (${preview.open_count} stale open request${preview.open_count === 1 ? '' : 's'} will be cleared.)`}
+      </div>
+    )
+  }
+  const verb = dir === 'incoming' ? 'they pay you' : 'you pay them'
+  const tone = dir === 'incoming' ? BF_COLORS.green : BF_COLORS.coral
+  return (
+    <div style={{
+      padding: '14px 16px', borderRadius: 14,
+      background: 'rgba(255,255,255,0.03)',
+      border: `0.5px solid ${BF_COLORS.hairline}`,
+    }}>
+      <div style={{
+        fontFamily: SF, fontSize: 11, color: BF_COLORS.sub, fontWeight: 600,
+        textTransform: 'uppercase', letterSpacing: 0.5,
+      }}>{verb}</div>
+      <div style={{
+        fontFamily: SFR, fontSize: 32, fontWeight: 800, color: tone,
+        letterSpacing: -0.6, marginTop: 4, lineHeight: 1,
+      }}>{amt}</div>
+      <div style={{
+        fontFamily: SF, fontSize: 12, color: BF_COLORS.sub, marginTop: 8,
+      }}>
+        nets <strong style={{ color: BF_COLORS.text, fontWeight: 700 }}>
+          {preview.open_count} open request{preview.open_count === 1 ? '' : 's'}
+        </strong>{' '}
+        into one direct request. the rest get marked settled.
+      </div>
     </div>
   )
 }

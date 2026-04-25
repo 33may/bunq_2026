@@ -14,6 +14,7 @@ from fastapi import (
     Response,
     UploadFile,
 )
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from ..config import settings
@@ -199,6 +200,44 @@ def get_scan(
     db: Session = Depends(get_db),
 ) -> ScanOut:
     return _to_out(_get_scan(db, scan_id, user))
+
+
+# Serves the saved receipt image bytes. Anyone in the same house as the
+# scan can fetch it (so a debtor can view a receipt their payer attached).
+# Local backend → FileResponse with the right mime; S3 → 302 to the bucket.
+@router.get("/{scan_id}/image")
+def get_scan_image(
+    scan_id: str,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    from ..data.models import HouseMember
+    scan = db.query(Scan).filter_by(id=scan_id).first()
+    if scan is None:
+        raise HTTPException(404, "scan not found")
+    in_house = (
+        db.query(HouseMember)
+        .filter_by(house_id=scan.house_id, user_id=user.id)
+        .first()
+    )
+    if in_house is None:
+        raise HTTPException(403, "not your house")
+    if not scan.image_url:
+        raise HTTPException(404, "no image")
+
+    if scan.image_url.startswith("file://"):
+        path = get_storage().local_path(scan.image_url)
+        ext = path.lower().rsplit(".", 1)[-1] if "." in path else "bin"
+        media = {
+            "jpg": "image/jpeg", "jpeg": "image/jpeg",
+            "png": "image/png", "heic": "image/heic", "webp": "image/webp",
+        }.get(ext, "application/octet-stream")
+        return FileResponse(path, media_type=media)
+
+    # S3-backed: hand the bytes back through the API rather than redirecting,
+    # so cookies/permissions stay coherent.
+    data = get_storage().load(scan.image_url)
+    return Response(content=data, media_type="image/jpeg")
 
 
 @router.patch("/{scan_id}", response_model=ScanOut)

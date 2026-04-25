@@ -63,14 +63,17 @@ export function RequestSplitForm({ mode, open, onClose, onSubmit, housemates, pr
     setDueDate(null); setSubmitting(false); setErrorMsg(null)
   }, [open, mode, myId])
 
-  // Store parent_post_id from prefill so we can forward it on submit.
+  // Store parent_post_id + source_scan_id from prefill so we can forward
+  // them on submit. Refs (not state) — they don't drive any UI.
   const parentPostIdRef = React.useRef(null)
+  const sourceScanIdRef = React.useRef(null)
 
   // Apply prefill once when the form opens (sparse merge — only overwrite
   // fields that are present in the prefill object).
   React.useEffect(() => {
     if (!open || !prefill) return
     parentPostIdRef.current = prefill.parent_post_id ?? null
+    sourceScanIdRef.current = prefill.source_scan_id ?? null
     if (prefill.amount !== undefined)   setCents(Math.round(prefill.amount * 100))
     if (prefill.total !== undefined)    setCents(Math.round(prefill.total * 100))
     if (prefill.title !== undefined)    setTitle(prefill.title)
@@ -135,6 +138,7 @@ export function RequestSplitForm({ mode, open, onClose, onSubmit, housemates, pr
           amount: amountEur,
           title: payload.title,
           description: payload.description,
+          ...(sourceScanIdRef.current ? { source_scan_id: sourceScanIdRef.current } : {}),
         })
         onSubmit?.({ ...payload, recipient: recipientId, result: res })
       } else {
@@ -145,6 +149,7 @@ export function RequestSplitForm({ mode, open, onClose, onSubmit, housemates, pr
           title: payload.title,
           description: payload.description,
           ...(parentPostIdRef.current ? { parent_post_id: parentPostIdRef.current } : {}),
+          ...(sourceScanIdRef.current ? { source_scan_id: sourceScanIdRef.current } : {}),
         })
         onSubmit?.({ ...payload, payer: payerId, splitWith, result: res })
       }

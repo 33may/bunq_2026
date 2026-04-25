@@ -14,14 +14,18 @@ from __future__ import annotations
 import logging
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from ..data.models import House, HouseMember, Split, SplitRequest, SplitRequestStatus, User
+from ..config import settings
+from ..data.models import (
+    House, HouseMember, Scan, ScanStatus, Split, SplitRequest, SplitRequestStatus, User,
+)
 from ..services.bunq import get_bunq_client
 from ..services.splits import create_split as _create_split
+from ..services.storage import get_storage
 from .deps import current_house, current_user, get_db
 from .schemas import SplitOut, SplitRequestOut
 
@@ -89,6 +93,7 @@ class CreateSplitIn(BaseModel):
     description: str | None = None
     currency: str = "EUR"
     parent_post_id: str | None = None
+    source_scan_id: str | None = None
 
 
 @router.post("/splits", response_model=SplitOut)
@@ -119,6 +124,14 @@ async def post_split(
             raise HTTPException(status.HTTP_403_FORBIDDEN,
                                 f"{p.name} isn't in your house")
 
+    # Defensive: only accept source_scan_id if it actually belongs to this
+    # house (prevents cross-house attachment). Silently drop if mismatched.
+    src_scan_id: str | None = None
+    if body.source_scan_id:
+        s = db.query(Scan).filter_by(id=body.source_scan_id, house_id=house.id).first()
+        if s is not None:
+            src_scan_id = s.id
+
     title = (body.title or body.description or "house split").strip() or "house split"
     split = await run_in_threadpool(
         _create_split,
@@ -127,6 +140,7 @@ async def post_split(
         total=body.total, title=title, description=body.description,
         currency=body.currency,
         parent_post_id=body.parent_post_id,
+        source_scan_id=src_scan_id,
     )
     return split_to_out(
         split,
@@ -143,6 +157,7 @@ class CreateRequestIn(BaseModel):
     title: str | None = None
     description: str | None = None
     currency: str = "EUR"
+    source_scan_id: str | None = None
 
 
 @router.post("/requests", response_model=SplitOut)
@@ -158,6 +173,12 @@ async def post_request(
     if debtor is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "recipient not found")
 
+    src_scan_id: str | None = None
+    if body.source_scan_id:
+        s = db.query(Scan).filter_by(id=body.source_scan_id, house_id=house.id).first()
+        if s is not None:
+            src_scan_id = s.id
+
     # Reuse the shared service — a request is just a 1-debtor split.
     title = (body.title or body.description or "house request").strip() or "house request"
     split = await run_in_threadpool(
@@ -166,6 +187,7 @@ async def post_request(
         house_id=house.id, payer=me, participants=[debtor],
         total=body.amount, title=title, description=body.description,
         currency=body.currency,
+        source_scan_id=src_scan_id,
     )
     return split_to_out(
         split,
@@ -441,6 +463,50 @@ async def decline_request(
         _apply_decision, sr,
         debtor_label=me.bunq_label, description=description, accept=False,
     )
+    db.commit()
+    db.refresh(split)
+    user_ids = {split.payer_id} | {r.debtor_id for r in split.requests}
+    return split_to_out(split, name_by_id=_name_lookup(db, user_ids))
+
+
+# ── POST /splits/{id}/receipt ──────────────────────────────────────────
+# Attach a receipt image to an existing split. Creates a Scan row in
+# `parsed` status (no AI parsing — this is an after-the-fact attachment),
+# stores the image via the configured backend, and links it via
+# split.source_scan_id. Either the payer or any debtor on the split can
+# attach. Returns the updated split.
+@router.post("/splits/{split_id}/receipt", response_model=SplitOut)
+async def attach_receipt(
+    split_id: str,
+    file: UploadFile = File(...),
+    me: User = Depends(current_user),
+    house: House = Depends(current_house),
+    db: Session = Depends(get_db),
+) -> SplitOut:
+    split = db.query(Split).filter_by(id=split_id, house_id=house.id).first()
+    if split is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "split not found")
+
+    # Authorization: only people on the split can attach a receipt.
+    debtor_ids = {r.debtor_id for r in split.requests}
+    if me.id != split.payer_id and me.id not in debtor_ids:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "not your split")
+
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(415, "image/* required")
+    data = await file.read()
+    if len(data) > settings.max_upload_mb * 1024 * 1024:
+        raise HTTPException(413, f"image > {settings.max_upload_mb}MB")
+
+    scan = Scan(
+        user_id=me.id, house_id=house.id, image_url="",
+        status=ScanStatus.parsed,
+        merchant=split.title, description=split.note,
+    )
+    db.add(scan)
+    db.flush()
+    scan.image_url = get_storage().save(scan.id, data, file.content_type)
+    split.source_scan_id = scan.id
     db.commit()
     db.refresh(split)
     user_ids = {split.payer_id} | {r.debtor_id for r in split.requests}
