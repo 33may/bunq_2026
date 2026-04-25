@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from ..config import settings
 from ..data import SessionLocal, init_db
-from ..data.models import House, HouseMember, Split, User
+from ..data.models import FeedComment, FeedPost, House, HouseMember, Split, User
 from ..services.splits import create_split
 from . import auth as auth_mod
 from . import bunq_me as bunq_me_mod
@@ -209,6 +209,57 @@ def _seed_demo_splits() -> None:
         db.close()
 
 
+def _seed_demo_post() -> None:
+    """Seed the demo "grocery run" post + comments. Anchors the receipt-from-
+    post flow: anton announces a jumbo run, the others comment what they
+    want, then in the demo we upload the AH long receipt and the AI matches
+    line items to commenters. One commenter asks for something NOT on the
+    receipt (dish soap) so we exercise the unmatched-item path too.
+
+    Idempotent: skips if any post already exists in the house.
+    """
+    db = SessionLocal()
+    try:
+        if db.query(FeedPost).first() is not None:
+            return
+        house = db.query(House).first()
+        if house is None:
+            return
+
+        users = {u.bunq_label: u for u in db.query(User).all() if u.bunq_label}
+        if not all(label in users for label in ("anton", "alex", "lena", "marco")):
+            log.info("demo post skipped — not all 4 sandbox users present")
+            return
+
+        post = FeedPost(
+            house_id=house.id,
+            author_id=users["anton"].id,
+            text="going on a grocery run in 30 — anything you need? drop it below.",
+        )
+        db.add(post)
+        db.flush()
+
+        # Comments tuned against ah_long.jpg line items: most match (avocado,
+        # sushi wraps, biltong, alpro pudding, AH BBQ burgers, protein
+        # pancakes); one is deliberately off-receipt (dish soap) so the AI
+        # has to flag it as unmatched in the review screen.
+        comments = [
+            ("lena",  "avocados pls — 2 for poke bowls. and the sushi wraps you usually get"),
+            ("alex",  "biltong if they have it + alpro pudding"),
+            ("marco", "BBQ burgers + that protein pancake mix. also dish soap if you can — running out"),
+        ]
+        for label, text in comments:
+            db.add(FeedComment(
+                post_id=post.id,
+                author_id=users[label].id,
+                text=text,
+            ))
+        db.commit()
+        log.info("seeded demo grocery-run post with %d comments", len(comments))
+    finally:
+        db.close()
+
+
 def _seed_regulars() -> None:
     """Insert the canonical 6 household regulars (rent, gas, water,
     electricity, internet, netflix) into the first house if it has none.
@@ -230,6 +281,7 @@ async def lifespan(_: FastAPI):
     _seed_bunq_users()
     _seed_demo_splits()
     _seed_regulars()
+    _seed_demo_post()
     yield
 
 
