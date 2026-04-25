@@ -93,6 +93,11 @@ def get_me(user: User = Depends(current_user)) -> UserOut:
 
 
 @router.post("/session/logout", status_code=204, response_class=Response)
-def logout(response: Response) -> Response:
-    response.delete_cookie(key=COOKIE_NAME, path="/")
-    return Response(status_code=204)
+def logout() -> Response:
+    # Build the actual response we return + set delete_cookie on IT.
+    # Setting it on a separately-injected Response that we then discard
+    # (which is what the previous version did) drops the Set-Cookie
+    # header on the floor and the browser keeps the session.
+    resp = Response(status_code=204)
+    resp.delete_cookie(key=COOKIE_NAME, path="/")
+    return resp
