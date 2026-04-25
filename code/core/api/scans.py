@@ -1,9 +1,12 @@
 """Scan endpoints — upload → parse → review → finalize."""
 from __future__ import annotations
 
+import io
 import logging
 from datetime import date as date_t
 from decimal import Decimal
+
+from PIL import Image, ImageOps
 
 from fastapi import (
     APIRouter,
@@ -152,6 +155,43 @@ async def _process_scan(scan_id: str) -> None:
         db.close()
 
 
+# ── helpers ─────────────────────────────────────────────────────────────
+_MAX_LONG_SIDE_PX = 1600   # ~plenty for receipt OCR; cuts Claude latency a lot
+_JPEG_QUALITY = 85
+
+
+def _maybe_downscale(data: bytes, content_type: str | None) -> tuple[bytes, str]:
+    """Resize the image so its longer side is at most _MAX_LONG_SIDE_PX,
+    re-encode as JPEG. Best-effort: if PIL can't open the bytes (HEIC,
+    weird format) we just hand back the original.
+
+    EXIF rotation is applied first so the saved image is right-side-up,
+    matching what the user saw when they took the photo.
+    """
+    try:
+        with Image.open(io.BytesIO(data)) as im:
+            im = ImageOps.exif_transpose(im)
+            longest = max(im.size)
+            if longest > _MAX_LONG_SIDE_PX:
+                ratio = _MAX_LONG_SIDE_PX / longest
+                new_size = (round(im.width * ratio), round(im.height * ratio))
+                im = im.resize(new_size, Image.Resampling.LANCZOS)
+            elif content_type == "image/jpeg":
+                # Already small + already JPEG — no point re-encoding.
+                return data, content_type
+            buf = io.BytesIO()
+            im.convert("RGB").save(buf, format="JPEG", quality=_JPEG_QUALITY, optimize=True)
+            log.info(
+                "scan image: %dx%d → %dx%d  %d → %d bytes",
+                *(im.size if longest <= _MAX_LONG_SIDE_PX else (round(im.width / ratio), round(im.height / ratio))),
+                *im.size, len(data), buf.tell(),
+            )
+            return buf.getvalue(), "image/jpeg"
+    except Exception as e:
+        log.warning("downscale failed (%s) — using original bytes", e)
+        return data, content_type or "application/octet-stream"
+
+
 # ── endpoints ───────────────────────────────────────────────────────────
 @router.post("", response_model=ScanOut, status_code=202)
 async def create_scan(
@@ -167,11 +207,16 @@ async def create_scan(
     if len(data) > settings.max_upload_mb * 1024 * 1024:
         raise HTTPException(413, f"image > {settings.max_upload_mb}MB")
 
+    # Downscale large images before saving — Claude vision latency scales
+    # with pixel area, and receipts don't need >1600px on the long side
+    # for OCR. Cuts parse time ~3-5x on phone-camera shots.
+    data, content_type = _maybe_downscale(data, file.content_type)
+
     scan = Scan(user_id=user.id, house_id=house.id, image_url="")
     db.add(scan)
     db.flush()
 
-    scan.image_url = get_storage().save(scan.id, data, file.content_type)
+    scan.image_url = get_storage().save(scan.id, data, content_type)
     db.commit()
     db.refresh(scan)
 
