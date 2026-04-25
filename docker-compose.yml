@@ -1,0 +1,65 @@
+# bunq flatmate — production compose.
+#
+#   docker compose up -d
+#
+# Brings up:
+#   • postgres   — primary DB
+#   • api        — FastAPI + uvicorn (uvicorn[standard] = websockets ready)
+#   • ui         — nginx serving built React SPA + reverse-proxy to api
+#
+# Persistent state lives in named volumes so `docker compose down` is safe.
+# Sandbox bunq keys are bind-mounted from ./code/.secrets so they're never
+# baked into an image.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: bunq
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bunq}
+      POSTGRES_DB: bunq
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bunq -d bunq"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ./code
+      dockerfile: Dockerfile.api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://bunq:${POSTGRES_PASSWORD:-bunq}@postgres:5432/bunq
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5-20251001}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      STORAGE_BACKEND: local
+      UPLOAD_DIR: /app/.house/uploads
+      PROFILE_DIR: /app/.house/profiles
+      CORS_ORIGINS: '["http://localhost", "http://127.0.0.1"]'
+    volumes:
+      - house:/app/.house
+      - ./code/.secrets:/app/.secrets:ro
+    expose:
+      - "8000"
+
+  ui:
+    build:
+      context: ./code/ui
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "${UI_PORT:-80}:80"
+
+volumes:
+  pgdata:
+  house:

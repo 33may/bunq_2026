@@ -63,13 +63,15 @@ else:
     )
 
 # Enforce FK constraints (SQLite default: off) and enable WAL for concurrent
-# readers (TUI polling + CLI writing at once).
-@event.listens_for(engine, "connect")
-def _sqlite_pragmas(dbapi_conn, _):
-    cur = dbapi_conn.cursor()
-    cur.execute("PRAGMA foreign_keys=ON")
-    cur.execute("PRAGMA journal_mode=WAL")
-    cur.close()
+# readers (TUI polling + CLI writing at once). Only on sqlite — postgres
+# has FKs on by default and doesn't speak PRAGMA.
+if engine.dialect.name == "sqlite":
+    @event.listens_for(engine, "connect")
+    def _sqlite_pragmas(dbapi_conn, _):
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA foreign_keys=ON")
+        cur.execute("PRAGMA journal_mode=WAL")
+        cur.close()
 
 
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, future=True)

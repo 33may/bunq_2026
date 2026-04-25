@@ -1,0 +1,24 @@
+# keep the api image small + don't leak local state
+__pycache__
+*.pyc
+*.pyo
+.venv
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# local dev state — we want fresh in the image
+.house
+.env
+.secrets
+
+# never ship the bundled UI into the api image
+ui
+
+# editor / VCS
+.git
+.gitignore
+.idea
+.vscode
+*.swp
+.DS_Store
