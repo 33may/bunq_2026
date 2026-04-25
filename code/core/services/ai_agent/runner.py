@@ -31,11 +31,18 @@ def _make_sse_queue() -> asyncio.Queue:
     return asyncio.Queue()
 
 
-async def _sdk_query(prompt: str, options: Any):
-    """Indirection over claude_agent_sdk.query so tests can substitute."""
+def _sdk_query(prompt: str, options: Any):
+    """Indirection over claude_agent_sdk.query so tests can substitute.
+
+    Returns the SDK's async generator directly — DO NOT wrap it in another
+    `async def ... yield ...` here. Wrapping introduces an extra anyio cancel
+    scope layer that, inside FastAPI's StreamingResponse context, gets
+    cancelled at the first internal await before the subprocess CLI lookup
+    completes. Returning the bare generator avoids that layer.
+    """
     from claude_agent_sdk import query  # lazy import
-    async for msg in query(prompt=prompt, options=options):
-        yield msg
+    log.info("_sdk_query: returning query() generator")
+    return query(prompt=prompt, options=options)
 
 
 def _build_options(*, user: User, house: House, mcp_server: Any):
@@ -167,8 +174,11 @@ async def run(
                 n_events += 1
                 yield ev
         log.info("turn.%s sdk_query loop ended cleanly sdk_msgs=%d", turn_id, sdk_msgs)
-    except Exception as e:
-        log.exception("turn.%s error: %s", turn_id, e)
+    except BaseException as e:
+        log.exception("turn.%s error: %s: %s", turn_id, type(e).__name__, e)
+        if not isinstance(e, Exception):
+            # GeneratorExit / CancelledError — re-raise after logging.
+            raise
         yield ErrorEvent(message=f"agent failed: {e}")
     finally:
         log.info("turn.%s end sdk_msgs=%d events=%d", turn_id, sdk_msgs, n_events)

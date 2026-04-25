@@ -52,6 +52,12 @@ async def post_ai_chat(
     )
 
     async def gen():
+        # Yield a comment frame immediately so StreamingResponse has bytes
+        # flowing before we start awaiting the SDK. Without this, FastAPI /
+        # uvicorn will sometimes treat the not-yet-streaming response as
+        # cancellable and tear down the request before the agent produces
+        # its first event.
+        yield ": stream-start\n\n"
         n = 0
         try:
             async for ev in runner_mod.run(
