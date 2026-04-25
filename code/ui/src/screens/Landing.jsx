@@ -61,16 +61,10 @@ export default function Landing({ onConnect }) {
         {/* hero copy */}
         <div style={{ flex: 1 }}>
           <div style={{
-            fontFamily: SFR, fontWeight: 700, fontSize: 38, lineHeight: 1.05,
-            letterSpacing: -1.2, color: '#fff', marginBottom: 14,
+            fontFamily: SFR, fontWeight: 700, fontSize: 56, lineHeight: 1.0,
+            letterSpacing: -1.6, color: '#fff',
           }}>
-            manage shared<br />expenses<br />in a tap.
-          </div>
-          <div style={{
-            fontFamily: SF, fontSize: 16, lineHeight: 1.45,
-            color: BF_COLORS.sub, letterSpacing: -0.1,
-          }}>
-            scan a receipt, we find who owes what, bunq sends the requests for you.
+            shared bills,<br />done.
           </div>
         </div>
 
