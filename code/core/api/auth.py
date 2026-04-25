@@ -69,13 +69,16 @@ def bunq_callback(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"unknown bunq user: {body.label!r}",
         )
+    # Secure when behind HTTPS (caddy in front). Falls back to insecure for
+    # bare-IP / localhost dev where Secure would silently drop the cookie.
+    cookie_secure = settings.cookie_secure
     response.set_cookie(
         key=COOKIE_NAME,
         value=user.bunq_label,
         max_age=COOKIE_MAX_AGE,
         httponly=True,
         samesite="lax",
-        secure=False,  # dev: http://localhost — Secure would drop the cookie
+        secure=cookie_secure,
         path="/",
     )
     return ConnectOut(user=UserOut(

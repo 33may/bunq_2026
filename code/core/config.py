@@ -42,6 +42,9 @@ class Settings(BaseSettings):
 
     # ── api ────────────────────────────────────────────────────────────
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    # Set to True behind HTTPS (caddy etc.) so the session cookie is only
+    # sent over secure transport. Leave False for bare-IP / localhost.
+    cookie_secure: bool = False
 
 
 settings = Settings()

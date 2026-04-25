@@ -1,0 +1,15 @@
+# bunq flatmate edge — terminates TLS, forwards everything to the ui
+# container (which already routes api/ws paths to the api container).
+# Auto-issues a Let's Encrypt cert for {$DOMAIN} on first request.
+
+{$DOMAIN} {
+	encode gzip
+
+	# WebSocket upgrade for /ws — caddy passes through Upgrade headers
+	# automatically; just forward.
+	reverse_proxy ui:80 {
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+}
