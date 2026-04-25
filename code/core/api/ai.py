@@ -45,18 +45,27 @@ async def post_ai_chat(
 ):
     history = [it.model_dump() for it in body.history]
     ctx = body.page_context.model_dump() if body.page_context else None
+    log.info(
+        "ai.chat.in client_turn=%s user=%s page=%s history=%d msg=%r",
+        body.client_turn_id, me.name, (ctx or {}).get("page_id"),
+        len(history), body.message[:80],
+    )
 
     async def gen():
+        n = 0
         try:
             async for ev in runner_mod.run(
                 message=body.message, history=history, page_context=ctx,
                 user=me, house=house, db=db,
             ):
+                n += 1
+                log.info("ai.chat.frame #%d type=%s", n, ev.type)
                 yield sse_frame(ev)
         except Exception:
-            log.exception("ai.chat.unhandled", extra={
-                "client_turn_id": body.client_turn_id})
+            log.exception("ai.chat.unhandled client_turn=%s", body.client_turn_id)
             yield sse_frame(ErrorEvent(message="agent failed"))
             yield sse_frame(DoneEvent(turn_id="error"))
+        finally:
+            log.info("ai.chat.out client_turn=%s frames=%d", body.client_turn_id, n)
 
     return StreamingResponse(gen(), media_type="text/event-stream")

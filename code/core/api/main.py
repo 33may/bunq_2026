@@ -28,6 +28,21 @@ from . import ai as ai_mod
 
 log = logging.getLogger(__name__)
 
+# Make sure the ai-agent logger surfaces alongside uvicorn output.
+# Uvicorn configures its own loggers but `bunq.ai` doesn't propagate to a
+# uvicorn handler by default — give it an explicit stream handler so
+# DEBUG/INFO calls land on stderr regardless of how the server is started.
+_ai_log = logging.getLogger("bunq.ai")
+if not _ai_log.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s %(message)s",
+        datefmt="%H:%M:%S",
+    ))
+    _ai_log.addHandler(_h)
+_ai_log.setLevel(logging.DEBUG)
+_ai_log.propagate = False
+
 # Deterministic colors so avatars stay consistent across sessions.
 LABEL_COLORS = {
     "anton": "#00D26A",

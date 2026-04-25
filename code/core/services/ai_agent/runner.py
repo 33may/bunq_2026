@@ -125,12 +125,11 @@ async def run(
     db: Session,
 ) -> AsyncIterator[Event]:
     turn_id = new_turn_id()
-    log.info("turn.start", extra={
-        "turn_id": turn_id, "user_id": user.id, "user_name": user.name,
-        "page_id": (page_context or {}).get("page_id"),
-        "msg_chars": len(message),
-        "history_n": len(history or []),
-    })
+    log.info(
+        "turn.start id=%s user=%s page=%s msg_chars=%d history=%d model=%s",
+        turn_id, user.name, (page_context or {}).get("page_id"),
+        len(message), len(history or []), settings.anthropic_model,
+    )
 
     sse_queue = _make_sse_queue()
     page_ref = {"v": page_context}
@@ -141,30 +140,36 @@ async def run(
         turn_id=turn_id,
     )
     options = _build_options(user=user, house=house, mcp_server=mcp)
+    log.info("turn.%s built mcp + options", turn_id)
 
     user_turn = render_user_msg(message=message, page_context=page_context, history=history)
     full_prompt = _fold_history(history, user_turn)
+    log.info("turn.%s prompt_chars=%d", turn_id, len(full_prompt))
 
     n_events = 0
     tool_id_map: dict[str, str] = {}
+    sdk_msgs = 0
     try:
+        log.info("turn.%s entering sdk_query loop", turn_id)
         async for sdk_msg in _sdk_query(full_prompt, options):
-            # Stop on ResultMessage — runner yields its own DoneEvent in finally.
-            if type(sdk_msg).__name__ == "ResultMessage":
+            sdk_msgs += 1
+            cls = type(sdk_msg).__name__
+            log.info("turn.%s sdk_msg #%d %s", turn_id, sdk_msgs, cls)
+            if cls == "ResultMessage":
                 continue
             for ev in _walk_blocks(sdk_msg, tool_id_map):
-                log.debug("event.sent", extra={"turn_id": turn_id, **ev.log_dict()})
+                log.info("turn.%s yield %s", turn_id, ev.type)
                 n_events += 1
                 yield ev
-            # Drain side-effect events (action / page_patch) the tools queued.
             while not sse_queue.empty():
                 ev = sse_queue.get_nowait()
-                log.debug("event.sent", extra={"turn_id": turn_id, **ev.log_dict()})
+                log.info("turn.%s yield (queued) %s", turn_id, ev.type)
                 n_events += 1
                 yield ev
-    except Exception:
-        log.exception("turn.error", extra={"turn_id": turn_id})
-        yield ErrorEvent(message="agent failed")
+        log.info("turn.%s sdk_query loop ended cleanly sdk_msgs=%d", turn_id, sdk_msgs)
+    except Exception as e:
+        log.exception("turn.%s error: %s", turn_id, e)
+        yield ErrorEvent(message=f"agent failed: {e}")
     finally:
-        log.info("turn.end", extra={"turn_id": turn_id, "n_events": n_events})
+        log.info("turn.%s end sdk_msgs=%d events=%d", turn_id, sdk_msgs, n_events)
         yield DoneEvent(turn_id=turn_id)
