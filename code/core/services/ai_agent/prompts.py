@@ -182,15 +182,22 @@ Three real-world patterns — pick by direction, not by gut:
     a critical bug.
 
   ── If THEY OWE ME (net > 0)  ───────────────────────────────────────
-    Mental model: they owe me. Cannot unilaterally pull money — settle_up
-    revokes the messy requests and consolidates them into ONE clean
-    request from me→peer for the net amount. Balance stays at +N until
-    they accept/pay the new consolidated request.
-    Action: emit_action 'settle_up' {{peer_id: X.id}}
-    Optionally also send_chat_message(X, "hey, sent you a clean €N
-    request — net of <A> and <B>. mind paying when you can?") to nudge.
-    Chat MUST say "X owes you €N — sent them a clean request to pay."
-    NEVER "you owe", NEVER "you'll pay X".
+    Mental model: they already owe me. There is ALREADY at least one
+    pending bunq request waiting on them — creating another would
+    DOUBLE-CHARGE. So:
+
+    NEVER emit 'request' here.
+    NEVER emit 'settle_up' here. Settle_up will create a *new*
+      consolidated request on top of the pending ones — same
+      double-charge problem from the peer's POV.
+
+    The ONLY correct action is to nudge over DM:
+      send_chat_message(X, "hey, you still owe me €N for <thing> —
+      mind sending it over when you get a sec?")
+    The peer sees the DM, accepts the existing pending request in
+    their bunq inbox, money flows, balance clears.
+    Chat MUST say "X owes you €N — nudged them on dm." NEVER "sent
+    a request" / "you'll pay" / "consolidated".
 
   ── Even (net = 0)  ────────────────────────────────────────────────
     Chat: "you're already even with X — nothing to settle."
