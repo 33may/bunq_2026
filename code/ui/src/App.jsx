@@ -921,6 +921,20 @@ function ThreadPage({ post, open, onClose, onOpenItem, housemates }) {
     if (open && isLive) { setDetail(null); refresh(); }
   }, [open, isLive, refresh]);
 
+  React.useEffect(() => {
+    if (!open || !post) return
+    registry.register('feed_post_detail', () => ({
+      post_id: post.id,
+      post_text: post.text,
+      author: { id: post.author?.id, name: post.author?.name },
+      comments: (post.comments || []).map(c => ({
+        author: { id: c.author?.id, name: c.author?.name },
+        text: c.text,
+      })),
+    }))
+    return () => registry.unregister('feed_post_detail')
+  }, [open, post?.id])
+
   if (!post) return null;
 
   // Pick the source of truth for replies + split: backend payload when live,
@@ -2908,6 +2922,35 @@ function ReviewScreen({
   const allAssigned = items.every(it => it.assigned);
   const othersTotal = people.filter(p => !p.isMe).reduce((s, p) => s + (totals[p.id] || 0), 0);
 
+  React.useEffect(() => {
+    if (!scan) return
+    registry.register('receipt_review', () => ({
+      scan_id: scan.id,
+      total: scan.total,
+      currency: scan.currency,
+      line_items: items.map(li => ({
+        id: li.id, name: li.name, price: li.price,
+        assignee_id: li.assigned ?? null,
+      })),
+      roster: housemates || [],
+      uploader_id: scan.user_id,
+      post_context: scan.post_context || null,
+    }))
+    return () => registry.unregister('receipt_review')
+  }, [scan?.id, items, housemates])
+
+  React.useEffect(() => {
+    return bus.on('receipt_assignments', (payload) => {
+      // payload.assignments: { [lineItemId]: assigneeId }
+      setItems(prev => prev.map(it =>
+        payload.assignments?.[it.id] !== undefined
+          ? { ...it, assigned: payload.assignments[it.id] }
+          : it
+      ))
+      log.patchApply('receipt_assignments', 'receipt_review', true)
+    })
+  }, [])
+
   const assigneeLabel = (assigned) => {
     if (!assigned) return null;
     if (assigned === 'everyone') return { name: 'everyone', color: BF_COLORS.lime, initial: '·' };
@@ -3185,6 +3228,18 @@ function QuickActionsWired({ onScan, onRequest, onSplit }) {
 }
 
 function HomeScreen({ onScan, onOpen, onAccept, onDecline, onRequest, onSplit, onProfile, onNotifications, me, house, splits, payments }) {
+  React.useEffect(() => {
+    registry.register('home', () => ({
+      balance: me?.balance ?? null,
+      pending_in_count: (splits || []).filter(s => s.payer_id === me?.id && !s.settled).length,
+      pending_out_count: (splits || []).reduce((n, s) =>
+        n + (s.requests || []).filter(r => r.debtor_id === me?.id && r.status === 'pending').length, 0),
+      unsettled_total: (splits || []).reduce((n, s) =>
+        n + (s.settled ? 0 : Number(s.total || 0)), 0),
+    }))
+    return () => registry.unregister('home')
+  }, [me?.id, splits])
+
   return (
     <div style={{ background: BF_COLORS.bg, minHeight: '100%', paddingTop: 62 }}>
       <HomeGreeting onProfile={onProfile} onNotifications={onNotifications} me={me} house={house} />
