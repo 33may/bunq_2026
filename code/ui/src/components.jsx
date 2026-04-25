@@ -116,70 +116,160 @@ export function ListRow({ leading, title, sub, titleAfter, trailing, onClick, _d
   );
 }
 
-// ── Chat — direct chat thread between you and one other person ──────
-// Reusable shell. Caller owns the message list + onSend.
-//   peer: { name, initial, color }
-//   me:   { name, initial, color }   (defaults to a generic "me")
-//   thread: [{ from: 'me'|'them', text, ago }]
-//   onSend(text): append a new message
-export function Chat({ peer, me, thread, onSend, placeholder, compact = false }) {
-  const meActor = me || { name: 'me', initial: 'M', color: BF_COLORS.green }
+// ── Chat — live chat thread (DM, split, or split_request).
+//
+// Props:
+//   messages: server-shape rows
+//     [{id, sender_id, sender_name, body, created_at, attachment_kind?, attachment_id?}]
+//   meId: current user id (used to flip own bubbles to the right side)
+//   peer: { name, initial, color }   — the "other side" used for unknown senders'
+//                                       avatar fallback. In a multi-party split,
+//                                       each message's sender_name drives the label
+//                                       and we color via a small palette derived
+//                                       from sender_id.
+//   onSend(text): async — caller persists + waits for the round-trip. We append
+//                 only via the WS echo, so no optimistic ghost.
+//   renderAttachment({kind, id, mine}): optional. Returns a node rendered inside
+//                 the bubble *above* the body — used in DMs to preview the
+//                 referenced split / split_request as an item card.
+//   fillHeight: when true, the component takes the full height of its parent
+//               (flex: 1) with the message list scrolling internally and the
+//               input pinned to the bottom. Default false (legacy inline).
+//   placeholder, compact: tweaks.
+export function Chat({
+  messages = [],
+  meId,
+  peer,
+  onSend,
+  renderAttachment,
+  placeholder,
+  compact = false,
+  fillHeight = false,
+}) {
   const [draft, setDraft] = React.useState('')
-  const submit = () => {
+  const [busy, setBusy] = React.useState(false)
+  const scrollerRef = React.useRef(null)
+  const stuckToBottomRef = React.useRef(true)
+
+  const submit = async () => {
     const t = draft.trim()
-    if (!t) return
-    onSend?.(t)
-    setDraft('')
+    if (!t || busy) return
+    setBusy(true)
+    try {
+      await onSend?.(t)
+      setDraft('')
+    } catch (e) {
+      console.warn('[chat] send failed', e)
+    } finally {
+      setBusy(false)
+    }
   }
+
+  // Track whether the user is parked near the bottom so we don't yank them
+  // back when they're scrolled up reading older messages.
+  const onScroll = () => {
+    const el = scrollerRef.current
+    if (!el) return
+    const dist = el.scrollHeight - el.clientHeight - el.scrollTop
+    stuckToBottomRef.current = dist < 80
+  }
+
+  React.useLayoutEffect(() => {
+    const el = scrollerRef.current
+    if (!el) return
+    if (stuckToBottomRef.current) el.scrollTop = el.scrollHeight
+  }, [messages])
+
+  // Initial mount → bottom (unconditional).
+  React.useEffect(() => {
+    const el = scrollerRef.current
+    if (el) el.scrollTop = el.scrollHeight
+    // intentionally no deps — fires once after first render
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      {thread.length === 0 && (
-        <div style={{
-          fontFamily: SF, fontSize: 13, color: BF_COLORS.sub, letterSpacing: -0.1,
-          padding: '6px 2px',
-        }}>
-          no messages yet — drop them a line.
-        </div>
-      )}
-      {thread.map((m, i) => {
-        const mine = m.from === 'me'
-        const who = mine ? meActor : peer
-        return (
-          <div key={i} style={{
-            display: 'flex', flexDirection: mine ? 'row-reverse' : 'row',
-            alignItems: 'flex-end', gap: 8,
+    <div style={fillHeight
+      ? { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }
+      : { display: 'flex', flexDirection: 'column', gap: 10 }
+    }>
+      <div
+        ref={scrollerRef}
+        onScroll={onScroll}
+        style={fillHeight
+          ? {
+              flex: 1, minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain',
+              display: 'flex', flexDirection: 'column', gap: 10,
+              padding: '4px 2px 8px',
+            }
+          : {
+              display: 'flex', flexDirection: 'column', gap: 10,
+              maxHeight: 280, overflowY: 'auto',
+            }
+        }
+      >
+        {messages.length === 0 && (
+          <div style={{
+            fontFamily: SF, fontSize: 13, color: BF_COLORS.sub, letterSpacing: -0.1,
+            padding: '6px 2px',
           }}>
-            <Avatar initial={who.initial} color={who.color} size={compact ? 24 : 26} />
-            <div style={{ maxWidth: '75%' }}>
-              <div style={{
-                padding: '8px 12px',
-                borderRadius: mine ? '16px 16px 4px 16px' : '16px 16px 16px 4px',
-                background: mine ? 'rgba(184,240,74,0.14)' : 'rgba(255,255,255,0.05)',
-                border: mine
-                  ? '0.5px solid rgba(184,240,74,0.28)'
-                  : `0.5px solid ${BF_COLORS.hairline}`,
-                color: BF_COLORS.text,
-                fontFamily: SF, fontSize: 13.5, lineHeight: 1.4, letterSpacing: -0.1,
-              }}>
-                {m.text}
-              </div>
-              <div style={{
-                fontFamily: SF, fontSize: 10.5, color: BF_COLORS.ter,
-                marginTop: 3, padding: '0 6px',
-                textAlign: mine ? 'right' : 'left',
-              }}>
-                {m.ago}
+            no messages yet — drop them a line.
+          </div>
+        )}
+        {messages.map((m) => {
+          const mine = !!meId && m.sender_id === meId
+          const senderName = m.sender_name || (mine ? 'me' : (peer?.name || 'them'))
+          const senderInitial = (senderName || '?')[0].toUpperCase()
+          const senderColor = mine
+            ? BF_COLORS.green
+            : (peer?.color || _bubbleColorFor(m.sender_id))
+          const att = (m.attachment_kind && m.attachment_id)
+            ? renderAttachment?.({ kind: m.attachment_kind, id: m.attachment_id, mine })
+            : null
+          return (
+            <div key={m.id} style={{
+              display: 'flex', flexDirection: mine ? 'row-reverse' : 'row',
+              alignItems: 'flex-end', gap: 8,
+            }}>
+              <Avatar initial={senderInitial} color={senderColor} size={compact ? 24 : 26} />
+              <div style={{ maxWidth: '78%', minWidth: 0 }}>
+                {att && <div style={{ marginBottom: 4 }}>{att}</div>}
+                <div style={{
+                  padding: '8px 12px',
+                  borderRadius: mine ? '16px 16px 4px 16px' : '16px 16px 16px 4px',
+                  background: mine ? 'rgba(184,240,74,0.14)' : 'rgba(255,255,255,0.05)',
+                  border: mine
+                    ? '0.5px solid rgba(184,240,74,0.28)'
+                    : `0.5px solid ${BF_COLORS.hairline}`,
+                  color: BF_COLORS.text,
+                  fontFamily: SF, fontSize: 13.5, lineHeight: 1.4, letterSpacing: -0.1,
+                  whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                }}>
+                  {m.body}
+                </div>
+                <div style={{
+                  fontFamily: SF, fontSize: 10.5, color: BF_COLORS.ter,
+                  marginTop: 3, padding: '0 6px',
+                  textAlign: mine ? 'right' : 'left',
+                }}>
+                  {!mine && senderName ? `${senderName} · ` : ''}{_relAgo(m.created_at)}
+                </div>
               </div>
             </div>
-          </div>
-        )
-      })}
+          )
+        })}
+      </div>
 
-      <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+      <div style={{
+        display: 'flex', gap: 8,
+        ...(fillHeight
+          ? { padding: '8px 2px 0', borderTop: `1px solid ${BF_COLORS.hairline}` }
+          : { marginTop: 6 }),
+      }}>
         <input
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') submit() }}
+          onKeyDown={(e) => { if (e.key === 'Enter' && !busy) submit() }}
           placeholder={placeholder || `message ${peer?.name || ''}…`}
           style={{
             flex: 1, height: 40, padding: '0 14px', borderRadius: 20,
@@ -191,21 +281,52 @@ export function Chat({ peer, me, thread, onSend, placeholder, compact = false })
         />
         <button
           onClick={submit}
-          disabled={!draft.trim()}
+          disabled={!draft.trim() || busy}
           style={{
             width: 40, height: 40, borderRadius: 20, border: 'none',
-            background: draft.trim() ? BF_COLORS.lime : 'rgba(255,255,255,0.08)',
-            color: '#000', cursor: draft.trim() ? 'pointer' : 'not-allowed',
+            background: draft.trim() && !busy ? BF_COLORS.lime : 'rgba(255,255,255,0.08)',
+            color: '#000', cursor: draft.trim() && !busy ? 'pointer' : 'not-allowed',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}
         >
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-            <path d="M7 12V2M3 6l4-4 4 4" stroke={draft.trim() ? '#000' : 'rgba(255,255,255,0.3)'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            <path d="M7 12V2M3 6l4-4 4 4" stroke={draft.trim() && !busy ? '#000' : 'rgba(255,255,255,0.3)'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
           </svg>
         </button>
       </div>
     </div>
   )
+}
+
+// Stable-ish color per sender_id — for split (group) bubbles where peer.color
+// doesn't apply since each message can be from a different mate.
+const _BUBBLE_PALETTE = [
+  BF_COLORS.amber, BF_COLORS.blue, BF_COLORS.coral, BF_COLORS.lime,
+  BF_COLORS.purple, BF_COLORS.pink, BF_COLORS.teal,
+]
+function _bubbleColorFor(id) {
+  if (!id) return BF_COLORS.amber
+  let h = 0
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0
+  return _BUBBLE_PALETTE[Math.abs(h) % _BUBBLE_PALETTE.length]
+}
+
+// "12m" / "3h" / "yesterday" / "12 mar" — short relative date for chat.
+function _relAgo(iso) {
+  if (!iso) return ''
+  const t = new Date(iso)
+  if (Number.isNaN(t.getTime())) return ''
+  const sec = Math.max(0, Math.floor((Date.now() - t.getTime()) / 1000))
+  if (sec < 60) return 'just now'
+  const min = Math.floor(sec / 60)
+  if (min < 60) return `${min}m`
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return `${hr}h`
+  const day = Math.floor(hr / 24)
+  if (day === 1) return 'yesterday'
+  if (day < 7) return `${day}d`
+  const m = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec']
+  return `${t.getDate()} ${m[t.getMonth()]}`
 }
 
 // ── SplitTracker — segmented bar + per-person paid/pending rows ─────
@@ -324,6 +445,9 @@ export function SplitTracker({ members, perPerson, total, label = 'split' }) {
 // Inline preview row: emoji + title + note.
 // Optional accept / decline footer.
 // Whole card tappable via onClick (action buttons stopPropagation).
+// `pending` ('accepting' | 'declining' | falsy): swaps the matching button
+// for a spinner and disables both while the parent's async handler runs —
+// the bunq accept call is not instant and the row needs feedback.
 export function ExpenseCard({
   from,             // { name, color }
   verb = 'requested',
@@ -336,7 +460,11 @@ export function ExpenseCard({
   onAccept,
   onDecline,
   showActions = true,
+  pending,
 }) {
+  const busy = !!pending;
+  const accepting = pending === 'accepting';
+  const declining = pending === 'declining';
   const agoLabel = !ago ? null
     : (ago === 'yesterday' || ago === 'today' || ago.includes('ago'))
       ? ago : `${ago} ago`;
@@ -382,28 +510,50 @@ export function ExpenseCard({
       {showActions && (
         <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
           <div
-            onClick={(e) => { e.stopPropagation(); onAccept?.(); }}
+            onClick={(e) => { e.stopPropagation(); if (!busy) onAccept?.(); }}
             style={{
-              flex: 1, height: 38, borderRadius: 12, background: BF_COLORS.text,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              flex: 1, height: 38, borderRadius: 12,
+              background: BF_COLORS.text,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
               fontFamily: SF, fontSize: 14, fontWeight: 700, color: '#000', letterSpacing: -0.1,
-              cursor: 'pointer',
+              cursor: busy ? 'default' : 'pointer',
+              opacity: declining ? 0.5 : 1,
             }}
-          >accept</div>
+          >
+            {accepting ? <Spinner color="#000" /> : 'accept'}
+          </div>
           <div
-            onClick={(e) => { e.stopPropagation(); onDecline?.(); }}
+            onClick={(e) => { e.stopPropagation(); if (!busy) onDecline?.(); }}
             style={{
               flex: 1, height: 38, borderRadius: 12,
               background: 'rgba(255,255,255,0.06)',
               border: `0.5px solid ${BF_COLORS.hairline}`,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
               fontFamily: SF, fontSize: 14, fontWeight: 600, color: BF_COLORS.sub, letterSpacing: -0.1,
-              cursor: 'pointer',
+              cursor: busy ? 'default' : 'pointer',
+              opacity: accepting ? 0.5 : 1,
             }}
-          >decline</div>
+          >
+            {declining ? <Spinner color={BF_COLORS.sub} /> : 'decline'}
+          </div>
         </div>
       )}
     </Card>
+  );
+}
+
+// Small inline spinner — same SVG/animation we use elsewhere. Inherits no
+// styles so callers can pin a color via the prop.
+function Spinner({ color = '#fff', size = 16 }) {
+  return (
+    <>
+      <svg width={size} height={size} viewBox="0 0 18 18" fill="none"
+           style={{ animation: 'expSpin 0.9s linear infinite' }}>
+        <circle cx="9" cy="9" r="6.5" stroke={color} strokeOpacity="0.25" strokeWidth="1.8"/>
+        <path d="M9 2.5a6.5 6.5 0 0 1 6.5 6.5" stroke={color} strokeWidth="1.8" strokeLinecap="round"/>
+      </svg>
+      <style>{`@keyframes expSpin { to { transform: rotate(360deg); } }`}</style>
+    </>
   );
 }
 
@@ -629,6 +779,12 @@ export function AIPreview({ tail }) {
         )}
       </div>
 
+      {/* tool trace — visible during streaming and after, so the user can see
+          exactly what was queried and what came back. */}
+      {tail.tools && tail.tools.length > 0 && (
+        <PreviewToolTrace tools={tail.tools} />
+      )}
+
       {/* rich preview card — what the AI prepared, with a clear review CTA */}
       {tail.kind === 'done' && tail.action?.preview && (
         <AIActionCard action={tail.action} />
@@ -646,6 +802,389 @@ export function AIPreview({ tail }) {
         }
       `}</style>
     </div>
+  )
+}
+
+// Tool trace for the floating preview pill — same shape as the one inside
+// AIWindow so behavior is consistent. Collapsed by default; tap to expand.
+// ── PrettyArgs — compact key/value chips for tool input ──────────
+// Each entry renders as "key: value" with a muted key and bright value.
+// Long values (long ids, big arrays) are truncated with a tooltip.
+// Per-tool blocklist hides args that the user already sees elsewhere
+// (e.g. emit_action's `payload` lives on the action card).
+const _ARG_HIDE = {
+  mcp__bunq__emit_action:      new Set(['payload']),
+  mcp__bunq__apply_page_patch: new Set(['payload']),
+}
+export function PrettyArgs({ args, tool }) {
+  if (!args || typeof args !== 'object') return null
+  const hidden = _ARG_HIDE[tool] || _ARG_HIDE[`mcp__bunq__${tool}`]
+  const entries = Object.entries(args).filter(([k, v]) => {
+    if (v === undefined || v === null || v === '') return false
+    if (hidden && hidden.has(k)) return false
+    return true
+  })
+  if (!entries.length) return null
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
+      {entries.map(([k, v]) => {
+        const text = formatArgValue(v)
+        const truncated = text.length > 40 ? text.slice(0, 38) + '…' : text
+        return (
+          <span
+            key={k}
+            title={text}
+            style={{
+              display: 'inline-flex', alignItems: 'baseline', gap: 4,
+              padding: '2px 7px', borderRadius: 8,
+              background: 'rgba(255,255,255,0.04)',
+              border: `0.5px solid ${BF_COLORS.hairline}`,
+              fontFamily: SF, fontSize: 11, letterSpacing: 0.05,
+              maxWidth: '100%',
+            }}
+          >
+            <span style={{ color: BF_COLORS.sub }}>{k}</span>
+            <span style={{ color: BF_COLORS.text, fontWeight: 600,
+                           overflow: 'hidden', textOverflow: 'ellipsis' }}>{truncated}</span>
+          </span>
+        )
+      })}
+    </div>
+  )
+}
+
+function formatArgValue(v) {
+  if (typeof v === 'string') return stripMcp(v)
+  if (typeof v === 'boolean' || typeof v === 'number') return String(v)
+  if (Array.isArray(v)) {
+    if (!v.length) return '[]'
+    if (v.every(x => typeof x === 'string' || typeof x === 'number'))
+      return v.map(x => typeof x === 'string' ? stripMcp(x) : String(x)).join(', ')
+    return stripMcp(JSON.stringify(v))
+  }
+  return stripMcp(JSON.stringify(v))
+}
+
+function stripMcp(s) {
+  return typeof s === 'string' ? s.replace(/mcp__bunq__/g, '') : s
+}
+
+// ── PrettyToolResult — structured layout per tool ─────────────────
+// Routes by the bare tool name (after stripping `mcp__bunq__`). Falls back to
+// formatted JSON when a tool has no dedicated renderer or the parse fails.
+export function PrettyToolResult({ tool, content, ok }) {
+  if (content == null || content === '') return null
+  const bare = (tool || '').replace(/^mcp__bunq__/, '')
+  const parsed = parseMaybeJSON(content)
+
+  if (!ok) {
+    return (
+      <div style={{ color: '#FF7A8A', fontFamily: SF, fontSize: 12 }}>
+        {typeof parsed === 'object' && parsed?.error
+          ? parsed.error
+          : (typeof content === 'string' ? content : JSON.stringify(parsed))}
+      </div>
+    )
+  }
+
+  if (parsed && typeof parsed === 'object' && parsed.error) {
+    return (
+      <div style={{ color: '#FF7A8A', fontFamily: SF, fontSize: 12 }}>{parsed.error}</div>
+    )
+  }
+
+  switch (bare) {
+    case 'list_housemates':       return <PR_ListHousemates rows={asArray(parsed)} />
+    case 'get_housemate':         return <PR_Housemate row={parsed} />
+    case 'list_splits':           return <PR_ListSplits rows={asArray(parsed)} />
+    case 'get_split':              return <PR_Split row={parsed} />
+    case 'get_balance_with':      return <PR_Balance data={parsed} />
+    case 'list_requests_with':    return <PR_ListRequests rows={asArray(parsed)} />
+    case 'list_recent_payments':  return <PR_ListPayments rows={asArray(parsed)} />
+    case 'emit_action':
+    case 'apply_page_patch':
+      return <PR_Plain text={typeof parsed === 'string' ? parsed : JSON.stringify(parsed)} />
+    case 'ToolSearch':            return <PR_ToolSearch rows={asArray(parsed)} />
+    default:
+      return <PR_JsonFallback value={parsed ?? content} />
+  }
+}
+
+function PR_ToolSearch({ rows }) {
+  if (!rows.length) return <PR_Empty label="no matches" />
+  const refs = rows.filter(r => r && r.type === 'tool_reference')
+  if (!refs.length) return <PR_JsonFallback value={rows} />
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+      {refs.map((r, i) => {
+        const name = (r.tool_name || '').replace(/^mcp__bunq__/, '')
+        return (
+          <span key={i} style={{
+            display: 'inline-block',
+            padding: '2px 8px', borderRadius: 8,
+            background: 'rgba(184,240,74,0.08)',
+            border: '0.5px solid rgba(184,240,74,0.20)',
+            fontFamily: SF, fontSize: 11, fontWeight: 700,
+            color: BF_COLORS.lime, letterSpacing: 0.05,
+          }}>{name || '?'}</span>
+        )
+      })}
+    </div>
+  )
+}
+
+function parseMaybeJSON(v) {
+  if (typeof v !== 'string') return v
+  const s = v.trim()
+  if (!s) return v
+  if (s[0] !== '{' && s[0] !== '[' && s[0] !== '"') return v
+  try { return JSON.parse(s) } catch { return v }
+}
+
+function asArray(v) {
+  return Array.isArray(v) ? v : []
+}
+
+const PR_label = { fontFamily: SF, fontSize: 11, color: BF_COLORS.sub, letterSpacing: 0.1 }
+const PR_value = { fontFamily: SF, fontSize: 12.5, color: BF_COLORS.text, letterSpacing: -0.1 }
+
+function PR_Empty({ label }) {
+  return <div style={{ ...PR_label, fontStyle: 'italic' }}>{label || 'no results'}</div>
+}
+
+function PR_Row({ leading, title, sub, trailing }) {
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 10,
+      padding: '6px 8px', borderRadius: 8,
+      background: 'rgba(255,255,255,0.025)',
+      border: `0.5px solid ${BF_COLORS.hairline}`,
+    }}>
+      {leading != null && <div style={{ flexShrink: 0 }}>{leading}</div>}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ ...PR_value, fontWeight: 700, whiteSpace: 'nowrap',
+                      overflow: 'hidden', textOverflow: 'ellipsis' }}>{title}</div>
+        {sub && <div style={{ ...PR_label, marginTop: 1 }}>{sub}</div>}
+      </div>
+      {trailing != null && <div style={{ flexShrink: 0 }}>{trailing}</div>}
+    </div>
+  )
+}
+
+function PR_ListHousemates({ rows }) {
+  if (!rows.length) return <PR_Empty />
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      {rows.map((m) => (
+        <PR_Row
+          key={m.id}
+          title={m.name}
+          sub={m.bunq_label && m.bunq_label !== m.name ? `bunq: ${m.bunq_label}` : null}
+        />
+      ))}
+    </div>
+  )
+}
+
+function PR_Housemate({ row }) {
+  if (!row) return <PR_Empty label="not found" />
+  return (
+    <div>
+      <PR_Row title={row.name} sub={row.bunq_label ? `bunq: ${row.bunq_label}` : null} />
+    </div>
+  )
+}
+
+function PR_ListSplits({ rows }) {
+  if (!rows.length) return <PR_Empty />
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      {rows.map((s) => <PR_Split key={s.id} row={s} compact />)}
+    </div>
+  )
+}
+
+function PR_Split({ row, compact = false }) {
+  if (!row) return <PR_Empty />
+  const total = `${row.currency || 'EUR'} ${row.total}`
+  const status = row.settled
+    ? 'settled'
+    : `${row.n_pending || 0} pending${row.n_failed ? ` · ${row.n_failed} failed` : ''}`
+  return (
+    <PR_Row
+      title={row.title || '(untitled)'}
+      sub={`paid by ${row.payer?.name || '?'} · ${status}`}
+      trailing={<span style={{ ...PR_value, fontWeight: 800,
+                              color: row.settled ? BF_COLORS.sub : BF_COLORS.text }}>{total}</span>}
+    />
+  )
+}
+
+function PR_Balance({ data }) {
+  if (!data) return <PR_Empty label="not found" />
+  const net = parseFloat(data.net_amount || '0')
+  const owedToMe = net > 0
+  const flat = Math.abs(net) < 0.005
+  const headline = flat
+    ? `even with ${data.counterparty?.name}`
+    : owedToMe
+      ? `${data.counterparty?.name} owes you ${data.currency || 'EUR'} ${Math.abs(net).toFixed(2)}`
+      : `you owe ${data.counterparty?.name} ${data.currency || 'EUR'} ${Math.abs(net).toFixed(2)}`
+  const items = Array.isArray(data.breakdown) ? data.breakdown : []
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ ...PR_value, fontWeight: 800,
+                    color: flat ? BF_COLORS.text : (owedToMe ? BF_COLORS.lime : '#FF7A8A') }}>
+        {headline}
+      </div>
+      {items.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {items.map((b, i) => (
+            <PR_Row
+              key={i}
+              title={b.title || '(split)'}
+              sub={b.direction === 'incoming' ? 'they owe you' : 'you owe them'}
+              trailing={<span style={{ ...PR_value, fontWeight: 700,
+                color: b.direction === 'incoming' ? BF_COLORS.lime : '#FF7A8A',
+              }}>€{b.amount}</span>}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function PR_ListRequests({ rows }) {
+  if (!rows.length) return <PR_Empty />
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      {rows.map((r) => (
+        <PR_Row
+          key={r.request_id}
+          title={r.split_title || '(split)'}
+          sub={`${r.direction === 'incoming' ? 'incoming' : 'outgoing'} · ${r.status}`}
+          trailing={<span style={{ ...PR_value, fontWeight: 700,
+            color: r.direction === 'incoming' ? BF_COLORS.lime : '#FF7A8A',
+          }}>€{r.amount}</span>}
+        />
+      ))}
+    </div>
+  )
+}
+
+function PR_ListPayments({ rows }) {
+  if (!rows.length) return <PR_Empty />
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      {rows.map((p, i) => (
+        <PR_Row
+          key={i}
+          title={p.counterparty || p.description || '(payment)'}
+          sub={p.created || p.date || null}
+          trailing={<span style={{ ...PR_value, fontWeight: 700 }}>
+            {p.currency || '€'} {p.amount}
+          </span>}
+        />
+      ))}
+    </div>
+  )
+}
+
+function PR_Plain({ text }) {
+  return <div style={{ ...PR_value }}>{text}</div>
+}
+
+function PR_JsonFallback({ value }) {
+  const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+  return (
+    <div style={{
+      whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+      fontFamily: 'SF Mono, ui-monospace, monospace', fontSize: 11,
+      color: BF_COLORS.text, opacity: 0.85,
+    }}>{text}</div>
+  )
+}
+
+// FadeSwap — fade-out-then-fade-in when `contentKey` changes; live-update
+// children for the same key without animating. Container height adapts
+// naturally to the swapped child (no absolute positioning).
+function FadeSwap({ contentKey, duration = 160, children }) {
+  const [shown, setShown] = React.useState(children)
+  const [visible, setVisible] = React.useState(true)
+  const lastKey = React.useRef(contentKey)
+
+  React.useEffect(() => {
+    if (contentKey === lastKey.current) {
+      // same item — pass-through update (live tool result arrival)
+      setShown(children)
+      return
+    }
+    setVisible(false)
+    const t = setTimeout(() => {
+      lastKey.current = contentKey
+      setShown(children)
+      setVisible(true)
+    }, duration)
+    return () => clearTimeout(t)
+  }, [contentKey, children, duration])
+
+  return (
+    <div style={{
+      opacity: visible ? 1 : 0,
+      transform: visible ? 'translateY(0)' : 'translateY(-3px)',
+      transition: `opacity ${duration}ms ease, transform ${duration}ms ease`,
+    }}>
+      {shown}
+    </div>
+  )
+}
+
+// Floating preview pill — shows ONLY the most recent tool call so the user
+// sees the live "what's the agent doing right now" without a scrolling list.
+// As new tool_use events arrive, the displayed call rotates with a smooth
+// fade-out → fade-in. The full history stays in the AIWindow chat bubble.
+function PreviewToolTrace({ tools }) {
+  if (!tools || !tools.length) return null
+  const idx = tools.length - 1
+  const t = tools[idx]
+  const bare = (t.tool || '').replace(/^mcp__bunq__/, '') || '?'
+  const statusColor = t.ok === false ? '#FF7A8A'
+    : t.ok === null ? BF_COLORS.sub : BF_COLORS.lime
+  const statusLabel = t.ok === false ? 'error'
+    : t.ok === null ? 'running…' : 'ok'
+
+  // Key on the call's position so the fade only fires when the displayed
+  // call rotates — not on every result-content update for the same call.
+  return (
+    <FadeSwap contentKey={idx}>
+      <div style={{
+        padding: '8px 10px', borderRadius: 10,
+        background: 'rgba(0,0,0,0.30)',
+        border: `0.5px solid ${BF_COLORS.hairline}`,
+        display: 'flex', flexDirection: 'column', gap: 4,
+      }}>
+        <div style={{
+          display: 'flex', alignItems: 'baseline', gap: 6,
+          fontFamily: SF, fontSize: 12, letterSpacing: 0.05,
+        }}>
+          <span style={{ color: BF_COLORS.lime, fontWeight: 800 }}>{bare}</span>
+          <span style={{ color: statusColor, fontSize: 10.5, fontWeight: 700,
+                         letterSpacing: 0.2, textTransform: 'lowercase' }}>· {statusLabel}</span>
+          {tools.length > 1 && (
+            <span style={{ marginLeft: 'auto', color: BF_COLORS.sub, fontSize: 10.5 }}>
+              {tools.length}/{tools.length}
+            </span>
+          )}
+        </div>
+        <PrettyArgs args={t.args} tool={t.tool} />
+        {t.content != null && t.content !== '' && (
+          <div style={{ marginTop: 4 }}>
+            <PrettyToolResult tool={t.tool} content={t.content} ok={t.ok !== false} />
+          </div>
+        )}
+      </div>
+    </FadeSwap>
   )
 }
 
@@ -708,7 +1247,7 @@ export function AIActionCard({ action }) {
   )
 }
 
-function CardRow({ title, sub, amount, cta, onClick }) {
+export function CardRow({ title, sub, amount, cta, onClick }) {
   return (
     <div style={{
       background: 'rgba(255,255,255,0.04)',

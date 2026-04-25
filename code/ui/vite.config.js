@@ -17,6 +17,9 @@ export default defineConfig({
       '/health': backend,
       '/posts': backend,
       '/ai': backend,
+      '/chats': backend,
+      // websocket — `ws: true` upgrades the connection in dev
+      '/ws': { target: backend, ws: true, changeOrigin: true },
       // auth / session
       '/users': backend,
       '/me': backend,      // also matches /me/bunq

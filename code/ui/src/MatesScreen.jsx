@@ -1,101 +1,72 @@
 import React from 'react'
-import { BF_COLORS, SF, SFR, Avatar, Card, List, ListRow, Chat, SplitTracker } from './components'
+import { BF_COLORS, SF, SFR, Avatar, List, ListRow, Chat, CardRow } from './components'
 import * as registry from './ai/pageContextRegistry'
-import { log } from './ai/log'
+import { useChat } from './hooks/useChat'
 
-// HOUSE — single source of truth used across mates / per-person views.
-// In a real app this comes from the backend; for the prototype each mate
-// also carries a small mocked transactions log + active-positions list so
-// we can render the per-person screen without real data.
-const NET = {
-  // me's net per person (positive = they owe me, negative = i owe them)
-  lena:  80.20,
-  sam:  -42.60,
-  alex: -12.40,
-}
-
-const HOUSE_MATES = [
-  {
-    id: 'lena', name: 'lena', initial: 'L', color: BF_COLORS.amber,
-    last: { text: "i grabbed dish soap, added to the split", from: 'them', ago: '14m' },
-    open: [
-      // Each open position is a full item shape so tapping it can hand off to ItemPage.
-      { id: 'r-cleaning', type: 'request', from: 'lena', fromColor: BF_COLORS.amber, ago: '14m',
-        title: 'cleaning supplies', note: 'dm, mop + spray · split 4 ways', amt: 6.20, total: 24.80,
-        emoji: '🧽', hasReceipt: false, message: 'grabbed a full set, splitting across the house',
-        side: 'owe-them' },
-      { id: 'p-rent', type: 'planned', days: 0, color: BF_COLORS.coral, emoji: '🏠',
-        title: 'rent · may', sub: 'monthly · auto-pay 18:00', amt: 612.50,
-        side: 'owe-them' },
-    ],
-    history: [
-      { id: 't1', when: 'today',    kind: 'received', amount:  18.40, label: 'pizza night settle-up' },
-      { id: 't2', when: 'apr 18',   kind: 'sent',     amount:  26.00, label: 'energy · mar share' },
-      { id: 't3', when: 'apr 12',   kind: 'received', amount:   4.20, label: 'split adjust · paper goods' },
-      { id: 't4', when: 'apr 03',   kind: 'sent',     amount: 612.50, label: 'rent · apr' },
-    ],
-  },
-  {
-    id: 'sam', name: 'sam', initial: 'S', color: BF_COLORS.pink,
-    last: { text: "wanna do thai for dinner?", from: 'them', ago: '2h' },
-    open: [
-      { id: 'r-pizza', type: 'request', from: 'sam', fromColor: BF_COLORS.pink, ago: '2h',
-        title: 'pizza night', note: 'four seasons · split 3 ways', amt: 8.50, total: 42.50,
-        emoji: '🍕', hasReceipt: true,
-        myItems: [
-          { name: 'margherita', price: 12.50 },
-          { name: 'diavola',    price: 14.00 },
-          { name: 'sparkling water', price: 3.00 },
-        ],
-        message: 'grabbed yours when i went — pay whenever!',
-        side: 'they-owe' },
-    ],
-    history: [
-      { id: 's1', when: 'mon',     kind: 'received', amount:  8.50, label: 'pizza night your share' },
-      { id: 's2', when: 'apr 10',  kind: 'sent',     amount: 22.00, label: 'beers · house party' },
-      { id: 's3', when: 'mar 28',  kind: 'received', amount: 14.00, label: 'concert tickets' },
-    ],
-  },
-  {
-    id: 'alex', name: 'alex', initial: 'A', color: BF_COLORS.blue,
-    last: { text: "you sent €18,00", from: 'me', ago: '5h' },
-    open: [
-      { id: 'r-uber', type: 'request', from: 'alex', fromColor: BF_COLORS.blue, ago: '5h',
-        title: 'uber back from centraal', note: 'last night 🌙', amt: 18.00,
-        emoji: '🚗', hasReceipt: false,
-        message: 'for the uber back from centraal last night',
-        side: 'they-owe' },
-    ],
-    history: [
-      { id: 'a1', when: '5h',     kind: 'sent',     amount:  18.00, label: 'uber back from centraal' },
-      { id: 'a2', when: 'apr 15', kind: 'received', amount:   5.20, label: 'paper goods share' },
-      { id: 'a3', when: 'apr 02', kind: 'sent',     amount:  12.50, label: 'spotify · split 4 ways' },
-    ],
-  },
-]
+// Mates list and per-mate detail page. Housemates + balances come from the
+// real backend (/housemates + /splits); 1:1 chat is wired to the
+// chat WebSocket via useChat — DM thread keyed by the peer user id.
 
 function fmtEuro(n) {
   return `€${Math.abs(n).toFixed(2).replace('.', ',')}`
 }
 
+// Net = sum of pending/failed SplitRequests between me and one peer
+// (positive = they owe me). Same convention as BalanceHero / get_balance_with.
+function _netWith(splits, meId, peerId) {
+  let amt = 0
+  for (const s of (splits || [])) {
+    for (const r of (s.requests || [])) {
+      if (r.status === 'accepted' || r.status === 'revoked' || r.status === 'rejected') continue
+      if (s.payer_id === meId && r.debtor_id === peerId) amt += Number(r.amount)
+      else if (s.payer_id === peerId && r.debtor_id === meId) amt -= Number(r.amount)
+    }
+  }
+  return amt
+}
+
+// Open positions = the same pending/failed requests, formatted for the list.
+function _openPositionsWith(splits, meId, peerId) {
+  const out = []
+  for (const s of (splits || [])) {
+    for (const r of (s.requests || [])) {
+      if (r.status === 'accepted' || r.status === 'revoked' || r.status === 'rejected') continue
+      const isMineOnPeer = s.payer_id === meId && r.debtor_id === peerId
+      const isPeerOnMe   = s.payer_id === peerId && r.debtor_id === meId
+      if (!isMineOnPeer && !isPeerOnMe) continue
+      out.push({
+        id: r.id,
+        type: 'request',
+        from: s.payer_name || 'someone',
+        title: s.title || 'request',
+        sub: s.note || 'request',
+        amt: Number(r.amount),
+        side: isMineOnPeer ? 'they-owe' : 'owe-them',
+        split: s,
+        request: r,
+      })
+    }
+  }
+  return out
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // MatesScreen — list of housemates, one row each, with last activity
 // ─────────────────────────────────────────────────────────────────────
-export function MatesScreen({ onOpenMate }) {
-  const summary = HOUSE_MATES.reduce((acc, m) => {
-    const n = NET[m.id] || 0
-    acc.youOwe   += n < 0 ? -n : 0
-    acc.youGet   += n > 0 ?  n : 0
+export function MatesScreen({ onOpenMate, me, housemates, splits }) {
+  const others = (housemates || []).filter(m => !m.is_me)
+
+  const summary = others.reduce((acc, m) => {
+    const n = _netWith(splits, me?.id, m.id)
+    acc.youOwe += n < 0 ? -n : 0
+    acc.youGet += n > 0 ?  n : 0
     return acc
   }, { youOwe: 0, youGet: 0 })
 
   return (
     <div style={{ background: BF_COLORS.bg, minHeight: '100%', paddingTop: 62 }}>
-      {/* greeting / overview */}
       <div style={{ padding: '10px 20px 18px' }}>
-        <div style={{
-          fontFamily: SF, fontSize: 13, color: BF_COLORS.sub, fontWeight: 500,
-        }}>
+        <div style={{ fontFamily: SF, fontSize: 13, color: BF_COLORS.sub, fontWeight: 500 }}>
           house chat & ledgers
         </div>
         <div style={{
@@ -106,21 +77,11 @@ export function MatesScreen({ onOpenMate }) {
         </div>
       </div>
 
-      {/* you owe / you get split panels */}
       <div style={{ padding: '0 20px 18px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-        <SummaryTile
-          label="you owe"
-          amount={summary.youOwe}
-          color={BF_COLORS.coral}
-        />
-        <SummaryTile
-          label="you're owed"
-          amount={summary.youGet}
-          color={BF_COLORS.green}
-        />
+        <SummaryTile label="you owe"     amount={summary.youOwe} color={BF_COLORS.coral} />
+        <SummaryTile label="you're owed" amount={summary.youGet} color={BF_COLORS.green} />
       </div>
 
-      {/* mates list */}
       <div style={{ padding: '0 20px' }}>
         <div style={{
           fontFamily: SF, fontSize: 12, color: BF_COLORS.sub, fontWeight: 600,
@@ -129,31 +90,40 @@ export function MatesScreen({ onOpenMate }) {
         }}>
           housemates
         </div>
-        <List>
-          {HOUSE_MATES.map(m => {
-            const n = NET[m.id] || 0
-            return (
-              <ListRow
-                key={m.id}
-                onClick={() => onOpenMate?.(m)}
-                leading={<Avatar initial={m.initial} color={m.color} size={42} />}
-                title={m.name}
-                sub={m.last ? (m.last.from === 'me' ? `you: ${m.last.text}` : m.last.text) : 'no messages yet'}
-                titleAfter={
-                  <span style={{
-                    fontFamily: SF, fontSize: 11, color: BF_COLORS.ter,
-                  }}>· {m.last?.ago}</span>
-                }
-                trailing={
-                  <NetPill net={n} />
-                }
-              />
-            )
-          })}
-        </List>
+        {others.length === 0 ? (
+          <div style={{
+            padding: '20px 16px', borderRadius: 16,
+            background: 'rgba(255,255,255,0.03)',
+            fontFamily: SF, fontSize: 13, color: BF_COLORS.sub, textAlign: 'center',
+          }}>
+            no other housemates yet.
+          </div>
+        ) : (
+          <List>
+            {others.map(m => {
+              const n = _netWith(splits, me?.id, m.id)
+              return (
+                <ListRow
+                  key={m.id}
+                  onClick={() => onOpenMate?.({
+                    id: m.id, name: m.name,
+                    initial: (m.name || '?')[0].toUpperCase(),
+                    color: m.color || BF_COLORS.amber,
+                  })}
+                  leading={<Avatar
+                    initial={(m.name || '?')[0].toUpperCase()}
+                    color={m.color || BF_COLORS.amber} size={42}
+                  />}
+                  title={m.name}
+                  sub="open chat"
+                  trailing={<NetPill net={n} />}
+                />
+              )
+            })}
+          </List>
+        )}
       </div>
 
-      {/* spacer for absolutely-positioned root Dock */}
       <div style={{ height: 180 }} />
     </div>
   )
@@ -180,7 +150,7 @@ function SummaryTile({ label, amount, color }) {
 }
 
 function NetPill({ net }) {
-  if (net === 0) {
+  if (Math.abs(net) < 0.005) {
     return (
       <span style={{
         fontFamily: SF, fontSize: 12, fontWeight: 600, color: BF_COLORS.ter,
@@ -204,38 +174,40 @@ function NetPill({ net }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// MatePage — full sheet for one mate. Header + actions + open positions
-//            + transactions + chat. Slides up like ItemPage.
+// MatePage — bottom-half pinned chat with header + summary above.
+//
+// Layout (top → bottom):
+//   1. header                — pinned, ~62px
+//   2. top section (compact) — hero (avatar + net), open positions list
+//   3. chat panel            — flex: 1, message list scrolls inside,
+//                              composer pinned to its bottom
+//
+// Everything stays inside the iPhone frame; only the chat message list
+// scrolls. New messages auto-stick to the bottom; users that scroll up to
+// read history are not yanked back.
 // ─────────────────────────────────────────────────────────────────────
-export function MatePage({ mate, open, onClose, onOpenItem }) {
-  const [tab, setTab] = React.useState('chat') // 'chat' | 'history'
-  const [thread, setThread] = React.useState([])
-
-  // reset & seed thread when opening
-  React.useEffect(() => {
-    if (!open || !mate) return
-    setTab('chat')
-    setThread(mate.last
-      ? [{ from: mate.last.from, text: mate.last.text, ago: mate.last.ago }]
-      : [])
-  }, [open, mate])
-
+export function MatePage({ mate, me, splits, open, onClose, onOpenItem }) {
   React.useEffect(() => {
     if (!open || !mate) return
     registry.register('mate_detail', () => ({
       mate: { id: mate.id, name: mate.name },
-      net_balance: mate.netBalance ?? null,
-      recent_items: (mate.items || []).slice(0, 8).map(it => ({
-        id: it.id, kind: it.type, title: it.title, amount: it.amount,
-      })),
     }))
     return () => registry.unregister('mate_detail')
-  }, [open, mate?.id])
+  }, [open, mate])
+
+  // useChat OWNS the WebSocket connection — opens on mount, closes on
+  // unmount. Keeping the page mounted (open=false) would keep the socket
+  // open; we render null when closed so the connection cycles cleanly.
+  const peerId = mate?.id || null
+  const { messages, send } = useChat({
+    kind: 'dm', key: peerId, meId: me?.id, enabled: !!(open && peerId && me?.id),
+  })
 
   if (!mate) return null
-  const net = NET[mate.id] || 0
-  const peer = { name: mate.name, initial: mate.initial, color: mate.color }
+  const net = _netWith(splits, me?.id, mate.id)
   const positive = net > 0
+  const positions = _openPositionsWith(splits, me?.id, mate.id)
+  const peer = { name: mate.name, initial: mate.initial, color: mate.color }
 
   return (
     <div style={{
@@ -251,6 +223,7 @@ export function MatePage({ mate, open, onClose, onOpenItem }) {
         padding: '54px 16px 8px',
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         background: 'linear-gradient(to bottom, #000 70%, rgba(0,0,0,0))',
+        flexShrink: 0,
       }}>
         <button onClick={onClose} style={{
           width: 36, height: 36, borderRadius: 18,
@@ -268,49 +241,34 @@ export function MatePage({ mate, open, onClose, onOpenItem }) {
         <div style={{ width: 36 }} />
       </div>
 
-      <div style={{ flex: 1, overflowY: 'auto', overscrollBehavior: 'contain', paddingBottom: 200 }}>
-        {/* hero */}
+      {/* compact top section — hero + open positions. Lays out at natural
+          height; the chat panel below soaks up the remaining space. */}
+      <div style={{ padding: '0 20px 12px', flexShrink: 0 }}>
         <div style={{
-          display: 'flex', flexDirection: 'column', alignItems: 'center',
-          padding: '6px 20px 20px', gap: 10,
+          display: 'flex', alignItems: 'center', gap: 14,
+          padding: '6px 0 14px',
         }}>
-          <Avatar initial={mate.initial} color={mate.color} size={72} />
-          <div style={{
-            fontFamily: SFR, fontSize: 22, fontWeight: 800, color: BF_COLORS.text,
-            letterSpacing: -0.4,
-          }}>{mate.name}</div>
-          <NetHero net={net} positive={positive} />
+          <Avatar initial={mate.initial} color={mate.color} size={56} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{
+              fontFamily: SFR, fontSize: 18, fontWeight: 800, color: BF_COLORS.text,
+              letterSpacing: -0.3,
+            }}>{mate.name}</div>
+            <NetSubline net={net} positive={positive} />
+          </div>
         </div>
 
-        {/* quick actions — pay/remind + request (split lives elsewhere) */}
-        <div style={{
-          padding: '0 20px 20px',
-          display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10,
-        }}>
-          <ActionTile color={BF_COLORS.green} label={positive ? 'remind' : 'pay'} icon={
-            <svg width="20" height="20" viewBox="0 0 22 22" fill="none">
-              <path d="M11 4v14M4 11l7-7 7 7" stroke="#000" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-          } />
-          <ActionTile color={BF_COLORS.amber} label="request" icon={
-            <svg width="20" height="20" viewBox="0 0 22 22" fill="none">
-              <path d="M4 11h9M9 6l-5 5 5 5M14 4v14" stroke="#000" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-          } />
-        </div>
-
-        {/* open positions */}
-        {mate.open && mate.open.length > 0 && (
-          <div style={{ padding: '0 20px 20px' }}>
-            <SectionHeader label={`open · ${mate.open.length}`} />
+        {positions.length > 0 && (
+          <>
+            <SectionHeader label={`open · ${positions.length}`} />
             <List>
-              {mate.open.map(o => (
+              {positions.slice(0, 3).map(o => (
                 <ListRow
                   key={o.id}
                   onClick={() => onOpenItem?.(o)}
                   leading={<KindGlyph kind={o.type} />}
                   title={o.title}
-                  sub={o.type === 'planned' ? 'planned · monthly' : 'request'}
+                  sub={o.sub}
                   trailing={
                     <span style={{
                       fontFamily: SFR, fontSize: 13, fontWeight: 800,
@@ -323,101 +281,109 @@ export function MatePage({ mate, open, onClose, onOpenItem }) {
                 />
               ))}
             </List>
-          </div>
+          </>
         )}
+      </div>
 
-        {/* tab switcher */}
-        <div style={{ padding: '0 20px 8px' }}>
-          <div style={{
-            display: 'flex', gap: 4, background: 'rgba(255,255,255,0.04)',
-            borderRadius: 12, padding: 3,
-          }}>
-            <TabPill active={tab === 'chat'}    onClick={() => setTab('chat')}    label="chat" />
-            <TabPill active={tab === 'history'} onClick={() => setTab('history')} label="history" />
-          </div>
+      {/* chat — fills remaining bottom area, internally scrollable */}
+      <div style={{
+        flex: 1, minHeight: 0,
+        padding: '8px 20px 24px',
+        display: 'flex', flexDirection: 'column',
+        borderTop: `1px solid ${BF_COLORS.hairline}`,
+        background: '#0A0A0C',
+      }}>
+        <div style={{
+          fontFamily: SF, fontSize: 12, color: BF_COLORS.sub, fontWeight: 600,
+          letterSpacing: 0.5, textTransform: 'uppercase',
+          padding: '6px 4px 8px', flexShrink: 0,
+        }}>
+          chat with {mate.name}
         </div>
-
-        {tab === 'chat' ? (
-          <div style={{ padding: '8px 20px 0' }}>
-            <Chat
-              peer={peer}
-              thread={thread}
-              onSend={(text) => setThread(s => [...s, { from: 'me', text, ago: 'just now' }])}
-              placeholder={`message ${mate.name}…`}
-            />
-          </div>
-        ) : (
-          <div style={{ padding: '8px 20px 0' }}>
-            <List>
-              {(mate.history || []).map(t => (
-                <ListRow
-                  key={t.id}
-                  leading={<TxnGlyph kind={t.kind} />}
-                  title={t.label}
-                  sub={t.when}
-                  trailing={
-                    <span style={{
-                      fontFamily: SFR, fontSize: 13, fontWeight: 800,
-                      color: t.kind === 'received' ? BF_COLORS.green : BF_COLORS.text,
-                      letterSpacing: -0.2,
-                    }}>
-                      {t.kind === 'received' ? '+' : '−'}{fmtEuro(t.amount)}
-                    </span>
-                  }
-                />
-              ))}
-            </List>
-          </div>
-        )}
+        <Chat
+          fillHeight
+          peer={peer}
+          meId={me?.id}
+          messages={messages}
+          onSend={(t) => send(t)}
+          renderAttachment={({ kind, id }) => (
+            <AttachmentPreview kind={kind} id={id} splits={splits} onOpen={onOpenItem} />
+          )}
+          placeholder={`message ${mate.name}…`}
+        />
       </div>
     </div>
   )
 }
 
-function NetHero({ net, positive }) {
-  if (net === 0) {
+function NetSubline({ net, positive }) {
+  if (Math.abs(net) < 0.005) {
     return (
       <div style={{
-        fontFamily: SFR, fontSize: 18, fontWeight: 700, color: BF_COLORS.sub,
-        letterSpacing: -0.3,
+        fontFamily: SF, fontSize: 13, color: BF_COLORS.sub, marginTop: 2,
       }}>all settled</div>
     )
   }
   const c = positive ? BF_COLORS.green : BF_COLORS.coral
   return (
-    <div style={{ textAlign: 'center' }}>
-      <div style={{
-        fontFamily: SF, fontSize: 12, color: BF_COLORS.sub, fontWeight: 600,
-        textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 4,
-      }}>
-        {positive ? 'they owe you' : 'you owe them'}
-      </div>
-      <div style={{
-        fontFamily: SFR, fontSize: 36, fontWeight: 800, color: c, letterSpacing: -1,
+    <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginTop: 2 }}>
+      <span style={{
+        fontFamily: SFR, fontSize: 18, fontWeight: 800, color: c, letterSpacing: -0.3,
       }}>
         {positive ? '+' : '−'}{fmtEuro(net)}
-      </div>
+      </span>
+      <span style={{ fontFamily: SF, fontSize: 12, color: BF_COLORS.sub }}>
+        {positive ? 'they owe you' : 'you owe them'}
+      </span>
     </div>
   )
 }
 
-function ActionTile({ color, label, icon }) {
+// AttachmentPreview — resolves a (kind, id) reference against the
+// in-memory `splits` payload and renders a CardRow above the bubble.
+// In split-attachment case, id may be a Split.id; in split_request case,
+// id is a SplitRequest.id (we walk every split to find it). When the
+// item isn't loaded (e.g. created in another session), we fall back to
+// a generic open chip.
+function AttachmentPreview({ kind, id, splits, onOpen }) {
+  const { item, label, amount } = React.useMemo(() => {
+    if (kind === 'split') {
+      const s = (splits || []).find(x => x.id === id)
+      return s
+        ? { item: { type: 'bill', split: s, title: s.title, amt: Number(s.total), id: s.id },
+            label: s.title || 'split',
+            amount: Number(s.total) }
+        : { item: null, label: 'split', amount: null }
+    }
+    if (kind === 'split_request') {
+      for (const s of (splits || [])) {
+        const r = (s.requests || []).find(x => x.id === id)
+        if (r) {
+          return {
+            item: {
+              type: 'request', split: s, request: r,
+              from: s.payer_name || 'someone',
+              title: s.title || 'request',
+              note: s.note || '',
+              amt: Number(r.amount),
+            },
+            label: s.title || 'request',
+            amount: Number(r.amount),
+          }
+        }
+      }
+    }
+    return { item: null, label: kind, amount: null }
+  }, [kind, id, splits])
+
   return (
-    <button style={{
-      background: color, borderRadius: 18, border: 'none',
-      padding: '14px 12px',
-      display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 12,
-      cursor: 'pointer',
-    }}>
-      <div style={{
-        width: 32, height: 32, borderRadius: 10,
-        background: 'rgba(0,0,0,0.12)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-      }}>{icon}</div>
-      <div style={{
-        fontFamily: SF, fontSize: 13, fontWeight: 700, color: '#000', letterSpacing: -0.1,
-      }}>{label}</div>
-    </button>
+    <CardRow
+      title={label}
+      sub={kind === 'split' ? 'split' : 'request'}
+      amount={amount ?? undefined}
+      cta={item ? 'open' : 'open'}
+      onClick={(e) => { e.stopPropagation(); if (item) onOpen?.(item) }}
+    />
   )
 }
 
@@ -428,18 +394,6 @@ function SectionHeader({ label }) {
       letterSpacing: 0.5, textTransform: 'uppercase',
       padding: '0 4px 8px',
     }}>{label}</div>
-  )
-}
-
-function TabPill({ active, onClick, label }) {
-  return (
-    <button onClick={onClick} style={{
-      flex: 1, height: 32, borderRadius: 9, border: 'none',
-      background: active ? BF_COLORS.text : 'transparent',
-      color: active ? '#000' : BF_COLORS.sub,
-      fontFamily: SF, fontSize: 13, fontWeight: 700, letterSpacing: -0.1,
-      cursor: 'pointer',
-    }}>{label}</button>
   )
 }
 
@@ -461,24 +415,6 @@ function KindGlyph({ kind }) {
           <path d="M3 8h7M7 4l-4 4 4 4M11 3v10" stroke={c} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
         </svg>
       )}
-    </div>
-  )
-}
-
-function TxnGlyph({ kind }) {
-  const sent = kind === 'sent'
-  const c = sent ? BF_COLORS.coral : BF_COLORS.green
-  return (
-    <div style={{
-      width: 36, height: 36, borderRadius: 18,
-      background: `${c}22`, border: `0.5px solid ${c}33`,
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-    }}>
-      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{
-        transform: sent ? 'rotate(0deg)' : 'rotate(180deg)',
-      }}>
-        <path d="M7 2v9M3 7l4 4 4-4" stroke={c} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-      </svg>
     </div>
   )
 }

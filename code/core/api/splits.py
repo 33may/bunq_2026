@@ -215,6 +215,30 @@ def get_split(
     return split_to_out(split, name_by_id=_name_lookup(db, user_ids))
 
 
+# ── GET /requests/{id} ─────────────────────────────────────────────────
+# Returns the parent Split for a given SplitRequest id. Used by the AI flow:
+# the agent emits `pay_request` with a request_id, and the client looks up
+# the surrounding split fresh from the DB rather than relying on a cache.
+@router.get("/requests/{request_id}", response_model=SplitOut)
+def get_request(
+    request_id: str,
+    me: User = Depends(current_user),
+    house: House = Depends(current_house),
+    db: Session = Depends(get_db),
+) -> SplitOut:
+    row = (
+        db.query(SplitRequest)
+        .join(Split, Split.id == SplitRequest.split_id)
+        .filter(SplitRequest.id == request_id, Split.house_id == house.id)
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "request not found")
+    split = row.split
+    user_ids = {split.payer_id} | {r.debtor_id for r in split.requests}
+    return split_to_out(split, name_by_id=_name_lookup(db, user_ids))
+
+
 # ── POST /splits/{id}/refresh ──────────────────────────────────────────
 # Re-polls bunq for each child request and updates local status. Cheap to
 # call on demand from the UI when a tile is opened.

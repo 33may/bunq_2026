@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>bunq flatmate</title>
+    <style>
+      html, body { margin: 0; padding: 0; background: #0a0a0b; }
+      body {
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: -apple-system, "SF Pro Text", system-ui, sans-serif;
+        padding: 40px 20px;
+        background: radial-gradient(1200px 700px at 50% 20%, #151518 0%, #0a0a0b 60%, #050506 100%);
+      }
+      #root { display: flex; align-items: center; justify-content: center; }
+      /* hide native scrollbars across the mockup so toggling overflow never
+         shifts the device width */
+      *::-webkit-scrollbar { width: 0; height: 0; }
+      * { scrollbar-width: none; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

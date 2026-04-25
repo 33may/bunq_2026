@@ -50,6 +50,7 @@ export const listMyPayments = (count = 50) => req(`/me/bunq/payments?count=${cou
 export const listSplits = (mineOnly = false) =>
   req(`/splits${mineOnly ? '?mine_only=true' : ''}`)
 export const getSplit = (id) => req(`/splits/${id}`)
+export const getRequest = (id) => req(`/requests/${id}`)
 export const refreshSplit = (id) => req(`/splits/${id}/refresh`, { method: 'POST' })
 export const createSplit = (body) => req('/splits', { method: 'POST', body })
 export const createRequest = (body) => req('/requests', { method: 'POST', body })
@@ -95,6 +96,46 @@ export const addComment = (postId, text) =>
   req(`/posts/${postId}/comments`, { method: 'POST', body: { text } })
 export const createSplitOnPost = (postId, body) =>
   req(`/posts/${postId}/split`, { method: 'POST', body })
+
+// ── chat ───────────────────────────────────────────────────────────────
+// Three thread shapes share one table, discriminated server-side:
+//   • dm            — listChat({ peerId })          / sendChat({ peerId, body, attachment? })
+//   • split         — listChat({ kind:'split', key }) / sendChat({ kind:'split', key, body })
+//   • split_request — same with kind:'split_request'
+const _qs = (obj) =>
+  Object.entries(obj)
+    .filter(([, v]) => v !== undefined && v !== null && v !== '')
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+    .join('&')
+
+export function listChat({ peerId, kind, key, limit = 200 } = {}) {
+  const q = _qs({ peer_id: peerId, kind, key, limit })
+  return req(`/chats${q ? `?${q}` : ''}`)
+}
+
+export function sendChat({ peerId, kind, key, body, attachment_kind, attachment_id }) {
+  return req('/chats', {
+    method: 'POST',
+    body: { peer_id: peerId, kind, key, body, attachment_kind, attachment_id },
+  })
+}
+
+export function markChatRead({ kind, key }) {
+  // For dm: pass kind:'dm', key=peerId (server canonicalizes)
+  return req('/chats/read', { method: 'POST', body: { kind, key } })
+}
+
+// Opens a WebSocket to the user-level /ws/chats endpoint. Cookies travel
+// automatically (same-origin via vite proxy in dev, same-origin in prod).
+// Returns the raw WebSocket so the caller controls onmessage / close.
+export function openChatSocket() {
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  // VITE_API_BASE may be a full http(s) URL when bypassing the proxy.
+  const base = API_BASE
+    ? API_BASE.replace(/^http/, 'ws')
+    : `${proto}//${window.location.host}`
+  return new WebSocket(`${base}/ws/chats`)
+}
 
 // ── polling helper ─────────────────────────────────────────────────────
 /**

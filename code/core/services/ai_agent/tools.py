@@ -18,20 +18,30 @@ from typing import Any, Callable
 
 from sqlalchemy.orm import Session
 
-from ...data.models import House, Split, SplitRequest, SplitRequestStatus, User
+from ...data.models import (
+    ChatAttachmentKind, ChatThreadKind,
+    House, Split, SplitRequest, SplitRequestStatus, User,
+)
+from .. import chats as chat_svc
 from . import reads
 from .events import ActionEvent, PagePatchEvent
 from .validators import validate_action_payload, validate_page_patch_payload
 
 log = logging.getLogger("bunq.ai")
 
-ALL_TOOL_NAMES = [
+_BARE_TOOL_NAMES = [
     "list_splits", "get_split",
     "list_housemates", "get_housemate",
     "get_balance_with", "list_requests_with",
     "list_recent_payments",
     "emit_action", "apply_page_patch",
+    "send_chat_message",
 ]
+
+# allowed_tools must use the MCP-qualified form `mcp__<server>__<tool>` for
+# the Claude CLI to match the actual MCP tools we register. Without the prefix,
+# the CLI silently falls back to its built-in toolbelt (ToolSearch etc.).
+ALL_TOOL_NAMES = [f"mcp__bunq__{n}" for n in _BARE_TOOL_NAMES]
 
 
 def build_tool_callables(
@@ -49,16 +59,17 @@ def build_tool_callables(
     def _wrap(name: str, fn: Callable[..., Any]):
         def inner(**kwargs):
             t0 = time.monotonic()
-            log.debug("tool.call", extra={"turn_id": turn_id, "tool": name, "args": kwargs})
+            # Note: `args` is a reserved LogRecord attribute — never put it
+            # in `extra`. Use plain positional formatting instead.
+            log.info("tool.call turn=%s tool=%s kwargs=%s", turn_id, name, kwargs)
             try:
                 out = fn(**kwargs)
                 ms = int((time.monotonic() - t0) * 1000)
-                log.debug("tool.result", extra={"turn_id": turn_id, "tool": name,
-                                                "ok": True, "ms": ms})
+                log.info("tool.ok turn=%s tool=%s ms=%d", turn_id, name, ms)
                 return out
             except Exception as e:
-                log.exception("tool.error", extra={"turn_id": turn_id,
-                                                    "tool": name, "args": kwargs})
+                log.exception("tool.error turn=%s tool=%s kwargs=%s",
+                              turn_id, name, kwargs)
                 return {"error": str(e)}
         return inner
 
@@ -122,7 +133,50 @@ def build_tool_callables(
         sse_queue.put_nowait(
             ActionEvent(kind=kind, summary=summary, payload=payload)
         )
-        return "action_emitted"
+        return "action requested"
+
+    def send_chat_message(
+        name_or_id: str,
+        body: str,
+        attachment_kind: str | None = None,
+        attachment_id: str | None = None,
+    ):
+        """Send a chat message AS the current user. Use to ask a housemate
+        for clarification or to relay info on the user's behalf.
+
+        - `name_or_id` is fuzzy-matched (same as get_housemate).
+        - When `attachment_kind`/`attachment_id` are set, the message
+          carries an inline reference to that split or split_request and
+          the recipient's chat will render an item card above the bubble.
+        """
+        other = reads.get_housemate(db, house_id=house.id, name_or_id=name_or_id)
+        if other is None:
+            return {"error": "housemate not found"}
+        if other["id"] == user.id:
+            return {"error": "cannot DM yourself"}
+        att_kind: ChatAttachmentKind | None = None
+        if attachment_kind:
+            try:
+                att_kind = ChatAttachmentKind(attachment_kind)
+            except ValueError:
+                return {"error": f"unknown attachment_kind: {attachment_kind}"}
+        try:
+            msg = chat_svc.save_message(
+                db,
+                house_id=house.id, sender_id=user.id,
+                kind=ChatThreadKind.dm,
+                key=chat_svc.dm_thread_key(user.id, other["id"]),
+                body=body,
+                attachment_kind=att_kind,
+                attachment_id=attachment_id,
+            )
+        except (PermissionError, ValueError) as e:
+            return {"error": str(e)}
+        chat_svc.publish(db, msg, sender_name=user.name)
+        return {
+            "sent_to": {"id": other["id"], "name": other["name"]},
+            "message_id": msg.id,
+        }
 
     def apply_page_patch(kind: str, payload: dict):
         page = current_page_context_ref()
@@ -144,6 +198,7 @@ def build_tool_callables(
         "list_recent_payments": _wrap("list_recent_payments", list_recent_payments),
         "emit_action":          _wrap("emit_action", emit_action),
         "apply_page_patch":     _wrap("apply_page_patch", apply_page_patch),
+        "send_chat_message":    _wrap("send_chat_message", send_chat_message),
     }
 
 
@@ -242,6 +297,28 @@ def build_mcp_server(**kw) -> Any:
         ))
 
     @tool(
+        name="send_chat_message",
+        description=(
+            "Send a chat message AS the current user to one housemate. Use this to ask "
+            "for clarification (e.g. 'what was the receipt for?') or to relay info on the "
+            "user's behalf. The recipient sees it instantly in their bunq DM with the user. "
+            "Optionally attach a split or split_request id; the recipient's chat will then "
+            "render an item card stacked above the bubble."
+        ),
+        input_schema={
+            "name_or_id": str, "body": str,
+            "attachment_kind": str, "attachment_id": str,
+        },
+    )
+    async def t_send_chat_message(args):
+        return _result(callables["send_chat_message"](
+            name_or_id=args["name_or_id"],
+            body=args["body"],
+            attachment_kind=args.get("attachment_kind"),
+            attachment_id=args.get("attachment_id"),
+        ))
+
+    @tool(
         name="apply_page_patch",
         description=(
             "Mutate the screen the user is currently on. "
@@ -259,5 +336,5 @@ def build_mcp_server(**kw) -> Any:
     return create_sdk_mcp_server(name="bunq", tools=[
         t_list_splits, t_get_split, t_list_housemates, t_get_housemate,
         t_get_balance_with, t_list_requests_with, t_list_recent_payments,
-        t_emit_action, t_apply_page_patch,
+        t_emit_action, t_apply_page_patch, t_send_chat_message,
     ])

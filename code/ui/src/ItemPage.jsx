@@ -1,7 +1,8 @@
 import React from 'react'
-import { BF_COLORS, SF, SFR, Avatar, timeLabel, SplitTracker, Chat } from './components'
+import { BF_COLORS, SF, SFR, Avatar, timeLabel, SplitTracker, Chat, CardRow } from './components'
 import * as registry from './ai/pageContextRegistry'
 import { log } from './ai/log'
+import { useChat } from './hooks/useChat'
 // (we don't import tokens.js directly because BF_COLORS/SF/SFR are re-imported via components)
 
 // ─────────────────────────────────────────────────────────────
@@ -221,7 +222,7 @@ function PlannedContent({ item }) {
   );
 }
 
-function RequestContent({ item }) {
+function RequestContent({ item, meId }) {
   const color = TYPE_META.request.color;
   const amt = item.amt || 0;
   return (
@@ -429,28 +430,38 @@ function RequestContent({ item }) {
       </ItemSection>
 
       {/* chat — thread between you and the requester */}
-      <ItemChat item={item} />
+      <ItemChat item={item} meId={meId} />
     </>
   );
 }
 
-// ── ItemChat — wraps the shared `Chat` for the item page ──────────
-function ItemChat({ item }) {
+// ── ItemChat — live chat scoped to one split or split_request.
+// For type='request' we key by the SplitRequest.id (a 1:1 thread between
+// payer and debtor). For type='bill'/'split' we key by Split.id (a group
+// thread visible to all participants). The `meId` makes own bubbles
+// flip to the right side.
+function ItemChat({ item, meId }) {
+  const refType = item.type === 'request' ? 'split_request' : 'split'
+  const refId = item.type === 'request'
+    ? (item.request?.id || item.id)
+    : (item.split?.id || item.id)
   const peer = {
     name: item.from || 'them',
     initial: (item.from || 'T')[0].toUpperCase(),
     color: item.fromColor || BF_COLORS.blue,
   }
-  const seed = item.message
-    ? [{ from: 'them', text: item.message, ago: item.ago === 'yesterday' ? 'yesterday' : `${item.ago} ago` }]
-    : []
-  const [thread, setThread] = React.useState(seed)
+  const { messages, send } = useChat({
+    kind: refType, key: refId, meId, enabled: !!refId,
+  })
   return (
-    <ItemSection title={`chat with ${peer.name}`}>
+    <ItemSection title={item.type === 'request' ? `chat with ${peer.name}` : 'chat'}>
       <Chat
         peer={peer}
-        thread={thread}
-        onSend={(text) => setThread(s => [...s, { from: 'me', text, ago: 'just now' }])}
+        meId={meId}
+        messages={messages}
+        onSend={(t) => send(t)}
+        renderAttachment={() => null /* attachments only relevant in DMs */}
+        placeholder={`message ${peer.name}…`}
       />
     </ItemSection>
   );
@@ -496,7 +507,7 @@ function StatusRow({ label, detail, state, color }) {
   );
 }
 
-function BillContent({ item }) {
+function BillContent({ item, meId }) {
   return (
     <>
       <ItemSection title="split breakdown">
@@ -505,6 +516,8 @@ function BillContent({ item }) {
       <ItemSection title="receipt">
         <Placeholder label="receipt photo + line items" height={140} />
       </ItemSection>
+      {/* group chat scoped to this split — every participant can see */}
+      <ItemChat item={item} meId={meId} />
     </>
   );
 }
@@ -727,11 +740,11 @@ function CompletedContent({ item }) {
   );
 }
 
-function ItemContent({ item }) {
+function ItemContent({ item, meId }) {
   switch (item.type) {
     case 'planned': return <PlannedContent item={item} />;
-    case 'request': return <RequestContent item={item} />;
-    case 'bill': return <BillContent item={item} />;
+    case 'request': return <RequestContent item={item} meId={meId} />;
+    case 'bill': return <BillContent item={item} meId={meId} />;
     case 'subscription': return <SubscriptionContent item={item} />;
     case 'completed': return <CompletedContent item={item} />;
     default: return <ItemSection title="details"><Placeholder label={`${item.type} content`} /></ItemSection>;
@@ -753,7 +766,12 @@ function ItemActions({ item, onClose, onAccept, onDecline }) {
         const share = ways > 1 ? (item.amt || 0) / ways : (item.amt || 0);
         return { primary: { label: `pay · €${share.toFixed(2).replace('.', ',')}`, bg: BF_COLORS.green, color: '#000' }, secondary: 'edit' };
       }
-      case 'request': return { primary: { label: `accept · €${item.amt?.toFixed(2).replace('.', ',')}`, bg: '#fff', color: '#000' }, secondary: 'decline' };
+      case 'request': {
+        // amt may not be on the wrapper (e.g. AI-emitted action items only carry
+        // .request) — fall back to the underlying SplitRequest.amount.
+        const reqAmt = Number(item.amt ?? item.request?.amount ?? 0);
+        return { primary: { label: `accept · €${reqAmt.toFixed(2).replace('.', ',')}`, bg: '#fff', color: '#000' }, secondary: 'decline' };
+      }
       case 'bill':    return { primary: { label: 'pay my share', bg: BF_COLORS.green, color: '#000' }, secondary: 'dispute' };
       case 'subscription': return { primary: { label: 'manage', bg: '#fff', color: '#000' }, secondary: 'leave' };
       case 'completed': return {
@@ -965,7 +983,7 @@ function ItemPageHeader({ onClose, accent }) {
   );
 }
 
-function ItemPage({ item, onClose, open, onAccept, onDecline }) {
+function ItemPage({ item, onClose, open, onAccept, onDecline, meId }) {
   React.useEffect(() => {
     if (!open || !item) return
     registry.register('item_detail', () => ({
@@ -1003,7 +1021,7 @@ function ItemPage({ item, onClose, open, onAccept, onDecline }) {
       }}>
         <ItemPageHeader onClose={onClose} />
         <ItemHero item={item} />
-        <ItemContent item={item} />
+        <ItemContent item={item} meId={meId} />
       </div>
       <ItemActions
         item={item}

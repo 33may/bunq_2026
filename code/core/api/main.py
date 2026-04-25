@@ -19,6 +19,7 @@ from ..data.models import House, HouseMember, Split, User
 from ..services.splits import create_split
 from . import auth as auth_mod
 from . import bunq_me as bunq_me_mod
+from . import chats as chats_mod
 from . import house as house_mod
 from . import scans as scans_mod
 from . import splits as splits_mod
@@ -86,22 +87,20 @@ def _seed_bunq_users() -> None:
         house = db.query(House).first()
         if house is None:
             house = House(
-                name="oak st",
-                address="Oak Street 42, 1016 GB",
-                city="Amsterdam",
+                name="De Regent 242",
+                address="De Regent 242",
+                city="Eindhoven",
                 country="NL",
             )
             db.add(house)
             db.flush()
         else:
-            # Backfill address fields for older seeds so the home greeting
-            # always has something to show.
-            if not house.address:
-                house.address = "Oak Street 42, 1016 GB"
-            if not house.city:
-                house.city = "Amsterdam"
-            if not house.country:
-                house.country = "NL"
+            # Force-rename existing rows so the demo always shows the
+            # canonical name; backfill address fields for older seeds.
+            house.name = "De Regent 242"
+            house.address = "De Regent 242"
+            house.city = "Eindhoven"
+            house.country = "NL"
 
         for path in sandbox_files:
             label = path.stem[len("sandbox-"):]
@@ -231,6 +230,7 @@ app.include_router(scans_mod.hm_router)
 app.include_router(transcribe_mod.router)
 app.include_router(posts_mod.router)
 app.include_router(ai_mod.router)
+app.include_router(chats_mod.router)
 
 
 @app.get("/health", tags=["meta"])

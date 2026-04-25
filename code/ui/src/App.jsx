@@ -16,7 +16,7 @@ import { useSplits } from './hooks/useSplits.js'
 import { usePayments } from './hooks/usePayments.js'
 import Landing from './screens/Landing.jsx'
 import OAuthConsent from './screens/OAuthConsent.jsx'
-import { logoutSession, acceptSplitRequest, declineSplitRequest } from './api.js'
+import { logoutSession, acceptSplitRequest, declineSplitRequest, getRequest } from './api.js'
 
 
 // iOS.jsx — Simplified iOS 26 (Liquid Glass) device frame
@@ -1839,21 +1839,8 @@ function FeedScreenV2({ onOpenPost }) {
 
 
 // bunq flatmate — Home (personal) — default tab
-// Extended balance section with curved bars + people, 3 quick actions,
-// Up Next with smart time labels, April summary, Completed transactions.
-
-// ── smart time label helper ──
-// offsetDays: 0=today, 1=tomorrow, 2-5 = "in N days", else date
-function timeLabel(offsetDays) {
-  if (offsetDays === 0) return 'today';
-  if (offsetDays === 1) return 'tomorrow';
-  if (offsetDays >= 2 && offsetDays <= 5) return `in ${offsetDays} days`;
-  // fallback: compute a date (mock today = apr 22)
-  const base = new Date(2025, 3, 22);
-  base.setDate(base.getDate() + offsetDays);
-  const months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
-  return `${base.getDate()} ${months[base.getMonth()]}`;
-}
+// Greeting + per-housemate balance hero, 3 quick actions, incoming
+// requests, this-month spend summary, completed payments.
 
 function HomeGreeting({ onProfile, onNotifications, me, house }) {
   const hour = new Date().getHours();
@@ -1892,16 +1879,59 @@ function HomeGreeting({ onProfile, onNotifications, me, house }) {
   );
 }
 
+// "last settled X days ago" — most recent accepted SplitRequest.updated_at
+// across the house, formatted relative to now. Lifted to module scope so
+// the call to Date.now() doesn't trip the React Compiler purity check.
+function computeLastSettled(splits) {
+  let latest = null;
+  for (const s of (splits || [])) {
+    for (const r of (s.requests || [])) {
+      if (r.status !== 'accepted') continue;
+      const t = r.updated_at ? new Date(r.updated_at).getTime() : NaN;
+      if (Number.isNaN(t)) continue;
+      if (latest == null || t > latest) latest = t;
+    }
+  }
+  if (latest == null) return 'no settlements yet';
+  const days = Math.floor((Date.now() - latest) / 86400000);
+  if (days <= 0) return 'last settled today';
+  if (days === 1) return 'last settled yesterday';
+  return `last settled ${days} days ago`;
+}
+
 // ── hero balance + curved bar chart of all housemates ──
-function BalanceHero() {
-  // Each person, signed balance from my POV (+owes me, −I owe)
-  const people = [
-    { name: 'sam',  amt:  18.40, color: BF_COLORS.pink },
-    { name: 'alex', amt:   6.40, color: BF_COLORS.blue },
-    { name: 'lena', amt:  -4.20, color: BF_COLORS.amber },
-  ];
+// Pulls real data:
+//   • per-housemate net = sum of pending/failed SplitRequests between me & them
+//     (positive = they owe me, negative = I owe them); accepted/revoked/rejected
+//     are excluded — same convention as the home Requests section and the
+//     ai-agent `get_balance_with` tool.
+//   • "last settled" = most recent `accepted` request `updated_at` across the
+//     house. Falls back to "no settlements yet" when the house has none.
+function BalanceHero({ me, house, splits }) {
+  const others = (house?.members || []).filter(m => !m.is_me);
+  const people = React.useMemo(() => others.map(m => {
+    let amt = 0;
+    for (const s of (splits || [])) {
+      for (const r of (s.requests || [])) {
+        if (r.status === 'accepted' || r.status === 'revoked' || r.status === 'rejected') continue;
+        if (s.payer_id === me?.id && r.debtor_id === m.id) amt += Number(r.amount);
+        else if (s.payer_id === m.id && r.debtor_id === me?.id) amt -= Number(r.amount);
+      }
+    }
+    return { name: m.name, amt, color: m.color || BF_COLORS.lime };
+  }), [others, splits, me?.id]);
+
   const maxAbs = Math.max(...people.map(p => Math.abs(p.amt)), 20); // floor for visual
   const net = people.reduce((s, p) => s + p.amt, 0);
+
+  const lastSettled = React.useMemo(() => computeLastSettled(splits), [splits]);
+
+  const houseName = house?.name || 'your house';
+  const owed = net >= 0;
+  const heroColor = owed ? BF_COLORS.green : BF_COLORS.coral;
+  const heroDim = owed ? 'rgba(0,210,106,0.55)' : 'rgba(255,106,78,0.55)';
+  const intPart = Math.floor(Math.abs(net));
+  const centsPart = String(Math.round((Math.abs(net) % 1) * 100)).padStart(2, '0');
 
   return (
     <div style={{ padding: '0 20px 18px' }}>
@@ -1911,19 +1941,19 @@ function BalanceHero() {
       }}>
         {/* caption */}
         <div style={{ fontFamily: SF, fontSize: 12, color: BF_COLORS.sub, fontWeight: 500, textTransform: 'uppercase', letterSpacing: 0.7 }}>
-          you're owed
+          {owed ? "you're owed" : 'you owe'}
         </div>
         {/* hero amount */}
         <div style={{ marginTop: 6, display: 'flex', alignItems: 'baseline', gap: 4, whiteSpace: 'nowrap' }}>
-          <span style={{ fontFamily: SFR, fontSize: 54, fontWeight: 800, color: BF_COLORS.green, letterSpacing: -2, lineHeight: 1 }}>
-            +€{Math.floor(net)}
+          <span style={{ fontFamily: SFR, fontSize: 54, fontWeight: 800, color: heroColor, letterSpacing: -2, lineHeight: 1 }}>
+            {owed ? '+' : '−'}€{intPart}
           </span>
-          <span style={{ fontFamily: SFR, fontSize: 26, fontWeight: 700, color: 'rgba(0,210,106,0.55)', letterSpacing: -0.6 }}>
-            ,{String(Math.round((net % 1) * 100)).padStart(2, '0')}
+          <span style={{ fontFamily: SFR, fontSize: 26, fontWeight: 700, color: heroDim, letterSpacing: -0.6 }}>
+            ,{centsPart}
           </span>
         </div>
         <div style={{ fontFamily: SF, fontSize: 13, color: BF_COLORS.sub, marginTop: 4 }}>
-          across oak st · last settled 12 days ago
+          across {houseName} · {lastSettled}
         </div>
 
         {/* curved soft bars — one per person */}
@@ -2014,99 +2044,111 @@ function QuickActions() {
   );
 }
 
-// ── up next — smart time labels ──
-function Planned({ onOpen }) {
-  const rows = [
-    { id: 'p-rent',      type: 'planned', emoji: '🏠', days: 0, color: BF_COLORS.coral,  title: 'rent',          sub: 'monthly · auto-pay 18:00', amt: 612.50 },
-    { id: 'p-netflix',   type: 'planned', emoji: '🎬', days: 1, color: BF_COLORS.purple, title: 'netflix',       sub: 'monthly · split 3 ways',   amt: 4.66 },
-    { id: 'p-groceries', type: 'planned', emoji: '🛒', days: 3, color: BF_COLORS.amber,  title: 'groceries run', sub: "weekly · lena's turn",     amt: null },
-    { id: 'p-energy',    type: 'planned', emoji: '💡', days: 5, color: BF_COLORS.teal,   title: 'energy bill',   sub: 'monthly · auto from pot',  amt: 28.00 },
-    { id: 'p-internet',  type: 'planned', emoji: '📡', days: 9, color: BF_COLORS.blue,   title: 'internet',      sub: 'monthly · split 3 ways',   amt: 13.33 },
-  ];
-  return (
-    <div style={{ padding: '0 20px 22px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, gap: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div style={{ fontFamily: SFR, fontSize: 17, fontWeight: 700, color: BF_COLORS.text, letterSpacing: -0.3, whiteSpace: 'nowrap' }}>
-            planned
-          </div>
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{ opacity: 0.5, flexShrink: 0 }}>
-            <path d="M3 7a4 4 0 118 0 4 4 0 01-8 0zM7 5v2l1.3 1.3" stroke="#fff" strokeWidth="1.3" strokeLinecap="round" fill="none"/>
-          </svg>
-        </div>
-        <span style={{ fontFamily: SF, fontSize: 13, color: BF_COLORS.sub, fontWeight: 500, whiteSpace: 'nowrap' }}>see all</span>
-      </div>
-      <List>
-        {rows.map((r, i) => (
-          <ListRow
-            key={i}
-            onClick={() => onOpen?.(r)}
-            leading={
-              <div style={{
-                minWidth: 64, height: 40, borderRadius: 12, padding: '0 10px',
-                background: `${r.color}22`,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-              }}>
-                <span style={{
-                  fontFamily: SFR, fontSize: 11, fontWeight: 700, color: r.color,
-                  textTransform: 'lowercase', letterSpacing: 0.2, whiteSpace: 'nowrap',
-                }}>{timeLabel(r.days)}</span>
-              </div>
-            }
-            title={r.title}
-            sub={r.sub}
-            trailing={r.amt != null && (
-              <span style={{ fontFamily: SFR, fontSize: 14, fontWeight: 700, color: BF_COLORS.text, letterSpacing: -0.2, whiteSpace: 'nowrap' }}>
-                €{r.amt.toFixed(2).replace('.', ',')}
-              </span>
-            )}
-          />
-        ))}
-      </List>
-    </div>
-  );
-}
+// ── this-month spend summary — mini chart ──
+// Real values only:
+//   • month label = current month name (lowercase).
+//   • headline total = sum of outgoing bunq Payments in the current month.
+//   • sub-line + delta pill = vs. last month's total over the same elapsed
+//     window (day 1 → today's day-of-month) so mid-month comparisons are
+//     fair. Hidden if last month has no spend.
+//   • bar chart = per-day outgoing spend, day 1 → today; today's bar is
+//     highlighted. Returns null until any payments exist.
+function SpendSummary({ payments }) {
+  const data = React.useMemo(() => {
+    if (!payments?.length) return null;
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = now.getMonth();
+    const today = now.getDate();
+    const daysInMonth = new Date(y, m + 1, 0).getDate();
 
-// ── your april summary — mini chart ──
-function SpendSummary() {
-  const days = [3, 5, 2, 8, 4, 12, 6, 3, 9, 4, 7, 11, 5, 3];
-  const max = Math.max(...days);
+    // Per-day outgoing for current month, day 1..today.
+    const days = new Array(today).fill(0);
+    let monthTotal = 0;
+    let prevMonthSameWindow = 0;
+    for (const p of payments) {
+      const amt = Number(p.amount);
+      if (!(amt < 0)) continue; // outgoing only
+      const t = p.created ? new Date(p.created) : null;
+      if (!t || Number.isNaN(t.getTime())) continue;
+      const out = -amt;
+      if (t.getFullYear() === y && t.getMonth() === m && t.getDate() <= today) {
+        days[t.getDate() - 1] += out;
+        monthTotal += out;
+      } else {
+        const prevY = m === 0 ? y - 1 : y;
+        const prevM = m === 0 ? 11 : m - 1;
+        if (t.getFullYear() === prevY && t.getMonth() === prevM && t.getDate() <= today) {
+          prevMonthSameWindow += out;
+        }
+      }
+    }
+    return { days, daysInMonth, monthTotal, prevMonthSameWindow, monthIdx: m };
+  }, [payments]);
+
+  if (!data || data.monthTotal === 0) return null;
+
+  const monthNames = ['january','february','march','april','may','june','july','august','september','october','november','december'];
+  const monthName = monthNames[data.monthIdx];
+
+  const max = Math.max(...data.days, 1);
+  // pad chart bars out to full month so the x-axis represents the whole month
+  const barCount = data.daysInMonth;
+  const lastIdx = data.days.length - 1;
+
+  const hasPrev = data.prevMonthSameWindow > 0;
+  const delta = hasPrev ? data.monthTotal - data.prevMonthSameWindow : 0;
+  const pct = hasPrev ? Math.round((delta / data.prevMonthSameWindow) * 100) : 0;
+  const under = delta < 0;
+  const pillColor = under ? BF_COLORS.green : BF_COLORS.coral;
+  const pillBg = under ? 'rgba(0,210,106,0.14)' : 'rgba(255,106,78,0.14)';
+
   return (
     <div style={{ padding: '0 20px 22px' }}>
       <div style={{ background: BF_COLORS.card, borderRadius: 22, padding: 16 }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
           <div>
             <div style={{ fontFamily: SF, fontSize: 12, color: BF_COLORS.sub, fontWeight: 500, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-              your april
+              your {monthName}
             </div>
             <div style={{ marginTop: 4 }}>
-              <Euro amount={247.80} big={28} small={16} />
+              <Euro amount={data.monthTotal} big={28} small={16} />
             </div>
-            <div style={{ fontFamily: SF, fontSize: 12, color: BF_COLORS.green, fontWeight: 600, marginTop: 2 }}>
-              €38 under your usual
-            </div>
+            {hasPrev && (
+              <div style={{ fontFamily: SF, fontSize: 12, color: under ? BF_COLORS.green : BF_COLORS.coral, fontWeight: 600, marginTop: 2 }}>
+                €{Math.abs(delta).toFixed(0)} {under ? 'under' : 'over'} last month
+              </div>
+            )}
           </div>
-          <div style={{
-            padding: '5px 10px', borderRadius: 10, background: 'rgba(0,210,106,0.14)',
-            fontFamily: SFR, fontSize: 12, fontWeight: 700, color: BF_COLORS.green, letterSpacing: -0.2,
-          }}>−13%</div>
+          {hasPrev && (
+            <div style={{
+              padding: '5px 10px', borderRadius: 10, background: pillBg,
+              fontFamily: SFR, fontSize: 12, fontWeight: 700, color: pillColor, letterSpacing: -0.2,
+            }}>{pct >= 0 ? '+' : '−'}{Math.abs(pct)}%</div>
+          )}
         </div>
         <div style={{
           display: 'flex', alignItems: 'flex-end', gap: 4,
           height: 54, marginTop: 14,
         }}>
-          {days.map((d, i) => (
-            <div key={i} style={{
-              flex: 1,
-              height: `${(d / max) * 100}%`,
-              background: i === days.length - 1 ? BF_COLORS.green : 'rgba(255,255,255,0.14)',
-              borderRadius: 3,
-              minHeight: 4,
-            }} />
-          ))}
+          {Array.from({ length: barCount }).map((_, i) => {
+            const v = i < data.days.length ? data.days[i] : 0;
+            const future = i >= data.days.length;
+            return (
+              <div key={i} style={{
+                flex: 1,
+                height: `${(v / max) * 100}%`,
+                background: future
+                  ? 'rgba(255,255,255,0.04)'
+                  : i === lastIdx ? BF_COLORS.green : 'rgba(255,255,255,0.14)',
+                borderRadius: 3,
+                minHeight: future ? 2 : (v > 0 ? 4 : 2),
+              }} />
+            );
+          })}
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontFamily: SF, fontSize: 10, color: BF_COLORS.ter }}>
-          <span>apr 1</span><span>today</span>
+          <span>{monthName.slice(0,3)} 1</span><span>today</span>
         </div>
       </div>
     </div>
@@ -2218,7 +2260,13 @@ function relativeAgo(iso) {
 // ── requests — incoming SplitRequests (someone is asking ME to pay) ──
 // Each row maps to a `SplitRequest` whose `debtor_id === me.id` and is
 // still pending. Tap → detail page (we hand the underlying split shape down).
+//
+// Local `pending` map tracks which request.id is currently mid-accept or
+// mid-decline so the row can show a spinner + disable both buttons until
+// the parent's async handler resolves and splits refresh.
 function Requests({ onOpen, onAccept, onDecline, me, splits }) {
+  const [pending, setPending] = React.useState({}); // { [request.id]: 'accepting' | 'declining' }
+
   // Build a flat list of {split, request} pairs where I owe money.
   const reqs = React.useMemo(() => {
     if (!me?.id || !splits?.length) return [];
@@ -2244,6 +2292,17 @@ function Requests({ onOpen, onAccept, onDecline, me, splits }) {
     }
     return rows;
   }, [me, splits]);
+
+  const handle = (kind, r) => async () => {
+    if (pending[r.id]) return;
+    setPending(p => ({ ...p, [r.id]: kind === 'accept' ? 'accepting' : 'declining' }));
+    try {
+      if (kind === 'accept') await onAccept?.(r);
+      else await onDecline?.(r);
+    } finally {
+      setPending(p => { const { [r.id]: _, ...rest } = p; return rest; });
+    }
+  };
 
   // No requests for the current user → still render the section so the
   // home rhythm stays consistent; just swap the body for an empty pill.
@@ -2289,8 +2348,9 @@ function Requests({ onOpen, onAccept, onDecline, me, splits }) {
               title={r.title}
               note={r.note}
               onClick={() => onOpen?.(r)}
-              onAccept={() => onAccept?.(r)}
-              onDecline={() => onDecline?.(r)}
+              onAccept={handle('accept', r)}
+              onDecline={handle('decline', r)}
+              pending={pending[r.id]}
             />
           ))}
         </div>
@@ -2952,12 +3012,32 @@ function ReviewScreen({
     return () => registry.unregister('receipt_review')
   }, [scan?.id, items, housemates])
 
+  // Keep latest pool in a ref so the bus listener can read current housemates
+  // without resubscribing every time the housemates list changes.
+  const poolRef = React.useRef(pool)
+  React.useEffect(() => { poolRef.current = pool }, [pool])
+
   React.useEffect(() => {
     return bus.on('receipt_assignments', (payload) => {
-      // payload.assignments: { [lineItemId]: assigneeId }
+      // payload.assignments: { [lineItemId]: assigneeId | "everyone" | null }
+      const assignments = payload.assignments || {}
+      // Auto-add any assignees that aren't already on the split. Without
+      // this, items get assigned to a housemate who's not in the SPLIT row,
+      // and they're silently excluded from the request when sent.
+      setPeople(prev => {
+        const have = new Set(prev.map(p => p.id))
+        const toAdd = []
+        for (const v of Object.values(assignments)) {
+          if (!v || v === 'everyone' || have.has(v)) continue
+          const cand = poolRef.current.find(p => p.id === v)
+          if (cand && !toAdd.some(p => p.id === cand.id)) toAdd.push(cand)
+          have.add(v)
+        }
+        return toAdd.length ? [...prev, ...toAdd] : prev
+      })
       setItems(prev => prev.map(it =>
-        payload.assignments?.[it.id] !== undefined
-          ? { ...it, assigned: payload.assignments[it.id] }
+        assignments[it.id] !== undefined
+          ? { ...it, assigned: assignments[it.id] }
           : it
       ))
       log.patchApply('receipt_assignments', 'receipt_review', true)
@@ -3143,7 +3223,7 @@ function SendingScreen({ onDone }) {
 }
 
 function ScanFlow({
-  phase, setPhase, onClose, cameraStyle, reviewLayout, aiChatty, aiOpen,
+  phase, setPhase, onClose, cameraStyle, reviewLayout, aiChatty, aiOpen, aiTail,
   scan, scanPreview, housemates, scanError, onCapture, onFinalize, postContext,
 }) {
   React.useEffect(() => {
@@ -3262,12 +3342,11 @@ function HomeScreen({ onScan, onOpen, onAccept, onDecline, onRequest, onSplit, o
   return (
     <div style={{ background: BF_COLORS.bg, minHeight: '100%', paddingTop: 62 }}>
       <HomeGreeting onProfile={onProfile} onNotifications={onNotifications} me={me} house={house} />
-      <BalanceHero />
+      <BalanceHero me={me} house={house} splits={splits} />
       <QuickActionsWired onScan={onScan} onRequest={onRequest} onSplit={onSplit} />
       <div style={{ height: 40 }} />
       <Requests onOpen={onOpen} onAccept={onAccept} onDecline={onDecline} me={me} splits={splits} />
-      <Planned onOpen={onOpen} />
-      <SpendSummary />
+      <SpendSummary payments={payments} />
       <Completed onOpen={onOpen} payments={payments} me={me} />
       {/* spacer for the absolutely-positioned root Dock */}
       <div style={{ height: 140 }} />
@@ -3408,18 +3487,33 @@ function BunqFlatmateApp() {
   const [itemOpen, setItemOpen] = React.useState(false);
   const openItem = (it) => { setSelectedItem(it); requestAnimationFrame(() => setItemOpen(true)); };
   const closeItem = () => { setItemOpen(false); setTimeout(() => setSelectedItem(null), 400); };
-  const openItemForRequest = (requestId) => {
-    const split = (splits || []).find(s => (s.requests || []).some(r => r.id === requestId))
-    if (!split) {
-      setAiOpen(true)
+  // Fetches the parent split fresh from the DB by request_id and opens the
+  // item page. Avoids relying on the in-memory `splits` cache so the AI flow
+  // works even for splits the client hasn't loaded yet (e.g. just-created).
+  const openItemForRequest = async (requestId) => {
+    let split
+    try {
+      split = await getRequest(requestId)
+    } catch (e) {
+      console.warn('[ai] openItemForRequest: GET /requests failed', requestId, e)
+      return
+    }
+    const request = (split.requests || []).find(r => r.id === requestId)
+    if (!request) {
+      console.warn('[ai] openItemForRequest: request missing on returned split', requestId)
       return
     }
     openItem({
-      id: split.id,
-      type: split.requests.length === 1 ? 'request' : 'bill',
-      focusRequestId: requestId,
-      title: split.title,
-      total: split.total,
+      id: request.id,
+      type: 'request',
+      from: split.payer_name || 'someone',
+      fromColor: BF_COLORS.amber,
+      ago: relativeAgo(split.created_at),
+      title: split.title || 'request',
+      note: split.note || '',
+      amt: Number(request.amount),
+      total: Number(split.total),
+      split, request,
       raw: split,
     })
   };
@@ -3491,6 +3585,11 @@ function BunqFlatmateApp() {
   const [aiPreviewHidden, setAiPreviewHidden] = React.useState(false);
   const lastCtxHashRef = React.useRef(null)
   const abortRef = React.useRef(null)
+  // Keep latest aiMessages in a ref so the send-listener effect doesn't
+  // re-subscribe (and abort the in-flight fetch via cleanup) every time a
+  // message is appended.
+  const aiMessagesRef = React.useRef(aiMessages)
+  React.useEffect(() => { aiMessagesRef.current = aiMessages }, [aiMessages])
 
   React.useEffect(() => {
     const toggle = () => setAiOpen(o => !o)
@@ -3517,11 +3616,13 @@ function BunqFlatmateApp() {
 
       let textBuf = ''
       let pendingAction = null
+      // Tool calls observed this turn — paired by tool name in arrival order.
+      const toolCalls = []
 
       try {
         for await (const ev of aiClient.chat({
           message: text,
-          history: aiMessages.slice(-20),
+          history: aiMessagesRef.current.slice(-20),
           page_context: sendCtx ? snap : null,
           client_turn_id: turnId,
           signal: controller.signal,
@@ -3530,14 +3631,37 @@ function BunqFlatmateApp() {
           switch (ev.type) {
             case 'text_delta':
               textBuf += ev.text
-              setAiTail({ kind: 'streaming', text: textBuf })
+              setAiTail(t => ({
+                ...(t || {}),
+                kind: 'streaming',
+                text: textBuf,
+                tools: toolCalls.length ? [...toolCalls] : undefined,
+              }))
               break
-            case 'tool_use':
-              setAiTail(t => ({ ...(t || {}), status: friendlyStatus(ev.tool) }))
+            case 'tool_use': {
+              toolCalls.push({ tool: ev.tool, args: ev.args, ok: null, content: null })
+              setAiTail(t => ({
+                ...(t || {}),
+                status: friendlyStatus(ev.tool),
+                tools: [...toolCalls],
+              }))
               break
-            case 'tool_result':
-              setAiTail(t => ({ ...(t || {}), status: null }))
+            }
+            case 'tool_result': {
+              // Match the latest pending call for this tool name.
+              for (let i = toolCalls.length - 1; i >= 0; i--) {
+                if (toolCalls[i].tool === ev.tool && toolCalls[i].ok === null) {
+                  toolCalls[i] = { ...toolCalls[i], ok: ev.ok, content: ev.content }
+                  break
+                }
+              }
+              setAiTail(t => ({
+                ...(t || {}),
+                status: null,
+                tools: [...toolCalls],
+              }))
               break
+            }
             case 'action':
               pendingAction = ev
               break
@@ -3552,7 +3676,12 @@ function BunqFlatmateApp() {
               const wired = pendingAction
                 ? wireAction(pendingAction, (a) => handleAiAction(a))
                 : null
-              setAiMessages(m => [...m, { role: 'ai', text: textBuf, action: wired }])
+              // Tools are intentionally NOT persisted onto the finalized AI
+              // message — once the response lands, the trace is debug noise.
+              // It stays available during streaming via aiTail.
+              setAiMessages(m => [...m, {
+                role: 'ai', text: textBuf, action: wired,
+              }])
               setAiTail({ kind: 'done', text: textBuf, action: wired })
               break
             }
@@ -3572,16 +3701,20 @@ function BunqFlatmateApp() {
       window.removeEventListener('bunq:ai-send', onSend)
       abortRef.current?.abort()
     }
-  }, [aiMessages])
+  }, [])
 
   const handleAiAction = (a) => {
     log.actionTap(a)
+    // Close the AI window so the opened surface (form / item / camera) is
+    // actually visible. AIWindow sits at zIndex 600 and would otherwise
+    // overlay everything else.
+    setAiOpen(false)
     switch (a.kind) {
       case 'request':     openForm('request', { prefill: a.payload }); break
       case 'split':       openForm('split',   { prefill: a.payload }); break
       case 'pay_request': openItemForRequest(a.payload.request_id); break
       case 'scan':        setScanPhase('camera'); break
-      default:            setAiOpen(true)
+      default:            /* unknown kind — leave AI open */ setAiOpen(true)
     }
   };
   const [tweaksOpen, setTweaksOpen] = React.useState(false);
@@ -3668,7 +3801,7 @@ function BunqFlatmateApp() {
                   payments={payments}
                 />
               )}
-              {tab === 'mates' && <MatesScreen onOpenMate={openMate} />}
+              {tab === 'mates' && <MatesScreen onOpenMate={openMate} me={me} housemates={housemates} splits={splits} />}
               {tab === 'feed' && <FeedScreenV2 onOpenPost={openPost} />}
               {tab === 'subs' && (
                 <div style={{
@@ -3699,12 +3832,15 @@ function BunqFlatmateApp() {
             onClose={closeItem}
             onAccept={acceptItem}
             onDecline={declineItem}
+            meId={me?.id}
           />
           <MatePage
             mate={selectedMate}
             open={mateOpen}
             onClose={closeMate}
             onOpenItem={openItem}
+            me={me}
+            splits={splits}
           />
           <RequestSplitForm
             mode={formMode}
@@ -3749,6 +3885,7 @@ function BunqFlatmateApp() {
               reviewLayout={tweaks.reviewLayout}
               aiChatty={tweaks.aiChatty}
               aiOpen={aiOpen}
+              aiTail={aiTail}
               scan={scanData}
               scanPreview={scanPreview}
               housemates={housemates}
@@ -3758,7 +3895,12 @@ function BunqFlatmateApp() {
             />
           )}
           {/* AIWindow rendered last so it always wins the stacking order */}
-          <AIWindow open={aiOpen} onClose={() => setAiOpen(false)} messages={aiMessages} />
+          <AIWindow
+            open={aiOpen}
+            onClose={() => setAiOpen(false)}
+            messages={aiMessages}
+            liveTail={aiTail && aiTail.kind !== 'done' ? aiTail : null}
+          />
           {tweaksOpen && <TweaksPanel tweaks={tweaks} setTweaks={setTweaks} onClose={closeTweaks} />}
         </div>
       </IOSDevice>

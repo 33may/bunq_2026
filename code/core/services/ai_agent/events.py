@@ -43,6 +43,7 @@ class ToolResultEvent(_Event):
     ok: bool
     ms: int = 0
     summary: str | None = None
+    content: Any = None  # truncated result text for debugging UIs
     type: Literal["tool_result"] = "tool_result"
 
 

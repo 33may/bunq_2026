@@ -47,6 +47,10 @@ def _sdk_query(prompt: str, options: Any):
 
 def _build_options(*, user: User, house: House, mcp_server: Any):
     from claude_agent_sdk import ClaudeAgentOptions
+
+    def _on_stderr(line: str) -> None:
+        log.warning("cli.stderr %s", line.rstrip())
+
     return ClaudeAgentOptions(
         system_prompt=render_system_prompt(user=user, house=house),
         model=settings.anthropic_model,
@@ -56,6 +60,7 @@ def _build_options(*, user: User, house: House, mcp_server: Any):
         setting_sources=[],
         max_turns=8,
         env={"ANTHROPIC_API_KEY": settings.anthropic_api_key},
+        stderr=_on_stderr,
     )
 
 
@@ -68,6 +73,35 @@ def _fold_history(history: list[dict] | None, current: str) -> str:
         for it in h[-20:]
     )
     return f"previous turns:\n{transcript}\n\ncurrent:\n{current}"
+
+
+def _flatten_result_content(raw: Any) -> Any:
+    """ToolResultBlock.content is `str | list[dict] | None`.
+
+    - None → ""
+    - str → str (passthrough)
+    - list of plain text blocks → joined text
+    - list with non-text items (e.g. tool_reference from ToolSearch) → JSON
+      so the frontend gets actual structure instead of Python repr.
+    """
+    import json as _json
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, list):
+        if all(isinstance(it, dict) and it.get("type") == "text" for it in raw):
+            return "\n".join(str(it.get("text", "")) for it in raw)
+        try:
+            return _json.dumps(raw)
+        except Exception:
+            return repr(raw)
+    return repr(raw)
+
+
+def _truncate(value: Any, n: int) -> str:
+    s = value if isinstance(value, str) else repr(value)
+    return s if len(s) <= n else s[:n] + f"...<+{len(s) - n} chars>"
 
 
 def _walk_blocks(msg: Any, tool_id_map: dict[str, str]) -> list[Event]:
@@ -93,7 +127,13 @@ def _walk_blocks(msg: Any, tool_id_map: dict[str, str]) -> list[Event]:
             uid = getattr(b, "tool_use_id", None)
             tool = tool_id_map.get(uid, "?")
             ok = not getattr(b, "is_error", False)
-            out.append(ToolResultEvent(tool=tool, ok=ok))
+            raw = getattr(b, "content", None)
+            content = _flatten_result_content(raw)
+            log.info(
+                "tool.result tool=%s ok=%s content=%s",
+                tool, ok, _truncate(content, 800),
+            )
+            out.append(ToolResultEvent(tool=tool, ok=ok, content=content))
             continue
 
         # ToolUseBlock — has both .name and .input
@@ -104,6 +144,7 @@ def _walk_blocks(msg: Any, tool_id_map: dict[str, str]) -> list[Event]:
             if name:
                 if uid:
                     tool_id_map[uid] = name
+                log.info("tool.use tool=%s args=%s", name, _truncate(args, 800))
                 out.append(ToolUseEvent(tool=name, args=args))
             continue
 
@@ -152,10 +193,20 @@ async def run(
     user_turn = render_user_msg(message=message, page_context=page_context, history=history)
     full_prompt = _fold_history(history, user_turn)
     log.info("turn.%s prompt_chars=%d", turn_id, len(full_prompt))
+    sys_prompt = render_system_prompt(user=user, house=house)
+    log.info(
+        "turn.%s ── SYSTEM PROMPT ──\n%s\n── END SYSTEM ──",
+        turn_id, sys_prompt,
+    )
+    log.info(
+        "turn.%s ── USER PROMPT (history-folded) ──\n%s\n── END USER ──",
+        turn_id, full_prompt,
+    )
 
     n_events = 0
     tool_id_map: dict[str, str] = {}
     sdk_msgs = 0
+    saw_result = False
     try:
         log.info("turn.%s entering sdk_query loop", turn_id)
         async for sdk_msg in _sdk_query(full_prompt, options):
@@ -163,6 +214,7 @@ async def run(
             cls = type(sdk_msg).__name__
             log.info("turn.%s sdk_msg #%d %s", turn_id, sdk_msgs, cls)
             if cls == "ResultMessage":
+                saw_result = True
                 continue
             for ev in _walk_blocks(sdk_msg, tool_id_map):
                 log.info("turn.%s yield %s", turn_id, ev.type)
@@ -175,11 +227,17 @@ async def run(
                 yield ev
         log.info("turn.%s sdk_query loop ended cleanly sdk_msgs=%d", turn_id, sdk_msgs)
     except BaseException as e:
-        log.exception("turn.%s error: %s: %s", turn_id, type(e).__name__, e)
         if not isinstance(e, Exception):
             # GeneratorExit / CancelledError — re-raise after logging.
+            log.exception("turn.%s error: %s: %s", turn_id, type(e).__name__, e)
             raise
-        yield ErrorEvent(message=f"agent failed: {e}")
+        if saw_result:
+            # CLI subprocess exited non-zero AFTER delivering the full result —
+            # benign teardown noise. Don't surface as error.
+            log.warning("turn.%s post-result CLI exit ignored: %s", turn_id, e)
+        else:
+            log.exception("turn.%s error: %s: %s", turn_id, type(e).__name__, e)
+            yield ErrorEvent(message=f"agent failed: {e}")
     finally:
         log.info("turn.%s end sdk_msgs=%d events=%d", turn_id, sdk_msgs, n_events)
         yield DoneEvent(turn_id=turn_id)

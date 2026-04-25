@@ -38,7 +38,7 @@ def test_tool_emit_action_request_validates_and_queues(db, seeded):
         kind="request", summary="settle €5",
         payload={"to_user_id": seeded["lena"].id, "amount": 5},
     )
-    assert res == "action_emitted"
+    assert res == "action requested"
     ev = q.get_nowait()
     assert ev.type == "action"
     assert ev.kind == "request"
