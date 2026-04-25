@@ -11,13 +11,6 @@ import React from 'react'
 import { connectBunq, listUsers } from '../api.js'
 import { BF_COLORS, SF, SFR } from '../tokens.js'
 
-const SCOPES = [
-  { icon: '👁', label: 'read your accounts and balance' },
-  { icon: '↗', label: 'send payment requests on your behalf' },
-  { icon: '🏠', label: 'create joint household accounts' },
-  { icon: '⇄', label: 'receive incoming payment events' },
-]
-
 export default function OAuthConsent({ open, onAllow, onCancel }) {
   const [users, setUsers] = React.useState([])
   const [selectedLabel, setSelectedLabel] = React.useState(null)
@@ -116,38 +109,7 @@ export default function OAuthConsent({ open, onAllow, onCancel }) {
           WebkitOverflowScrolling: 'touch',
         }}>
           <div style={{
-            fontFamily: SFR, fontSize: 19, color: '#0B0B0E', letterSpacing: -0.3,
-            fontWeight: 700,
-          }}>
-            <span style={{ color: '#00A656' }}>flatmate</span> wants to access your bunq account
-          </div>
-
-          <div style={{
-            marginTop: 14,
-            display: 'flex', flexDirection: 'column', gap: 8,
-          }}>
-            {SCOPES.map((s, i) => (
-              <div key={i} style={{
-                display: 'flex', alignItems: 'center', gap: 10,
-                padding: '10px 12px', borderRadius: 10,
-                background: '#F3F5F2',
-              }}>
-                <div style={{
-                  width: 22, height: 22, borderRadius: 6,
-                  background: '#E6EFD9',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 12,
-                }}>{s.icon}</div>
-                <div style={{
-                  fontFamily: SF, fontSize: 13, color: '#2A2C30',
-                  letterSpacing: -0.1,
-                }}>{s.label}</div>
-              </div>
-            ))}
-          </div>
-
-          <div style={{
-            marginTop: 22, marginBottom: 8,
+            marginBottom: 8,
             fontFamily: SF, fontSize: 11, color: 'rgba(0,0,0,0.5)',
             textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 700,
           }}>choose your bunq account</div>
