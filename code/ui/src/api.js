@@ -177,7 +177,7 @@ export function openChatSocket() {
  * Poll GET /scans/:id until status is parsed or failed, or timeout.
  * Returns the final scan payload; throws on timeout or failed.
  */
-export async function waitForParse(id, { intervalMs = 1000, timeoutMs = 60000 } = {}) {
+export async function waitForParse(id, { intervalMs = 1000, timeoutMs = 120000 } = {}) {
   const start = Date.now()
   while (true) {
     const scan = await getScan(id)
