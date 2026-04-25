@@ -64,7 +64,7 @@ export default function Landing({ onConnect }) {
             fontFamily: SFR, fontWeight: 700, fontSize: 38, lineHeight: 1.05,
             letterSpacing: -1.2, color: '#fff', marginBottom: 14,
           }}>
-            split<br />housemates<br />in a tap.
+            manage shared<br />expenses<br />in a tap.
           </div>
           <div style={{
             fontFamily: SF, fontSize: 16, lineHeight: 1.45,
@@ -100,7 +100,7 @@ export default function Landing({ onConnect }) {
           marginTop: 14, textAlign: 'center',
           fontFamily: SF, fontSize: 11, color: BF_COLORS.ter, letterSpacing: 0.2,
         }}>
-          tests simulate the auth flow with predefined bunq sandbox accounts
+          simulate the auth flow with predefined bunq sandbox accounts
         </div>
       </div>
     </div>

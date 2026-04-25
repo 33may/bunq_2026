@@ -33,8 +33,14 @@ git push origin "$BRANCH"
 echo "→ deploying to $DROPLET ($REPO_DIR, branch=$BRANCH, service=${SERVICE:-all})"
 ssh "root@$DROPLET" "cd $REPO_DIR && git fetch && git checkout $BRANCH && git pull && docker compose up -d --build $SERVICE"
 
-# 3. quick health check
+# 3. quick health check (api takes ~5-10s to seed on first boot)
 echo "→ health check"
-sleep 3
-curl -sf "http://$DROPLET/health" && echo "  ✓ /health 200" || { echo "  ✗ /health failed"; exit 1; }
+for i in $(seq 1 12); do
+  if curl -sf "http://$DROPLET/health" >/dev/null 2>&1; then
+    echo "  ✓ /health 200"
+    break
+  fi
+  [ "$i" -eq 12 ] && { echo "  ✗ /health never came up"; exit 1; }
+  sleep 2
+done
 echo "→ done · http://$DROPLET"
