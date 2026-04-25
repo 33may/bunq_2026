@@ -23,6 +23,13 @@ COPY pytest.ini ./
 # Persistent dirs are mounted as volumes by docker-compose.
 RUN mkdir -p /app/.house/uploads /app/.house/profiles /app/.secrets
 
+# Run as non-root. The claude CLI (used by claude-agent-sdk) refuses
+# `--dangerously-skip-permissions` under root, killing every AI request.
+# Owning /app means uvicorn can write to .house/ at runtime.
+RUN groupadd -r app && useradd -r -g app -d /app -s /bin/bash app \
+    && chown -R app:app /app
+USER app
+
 EXPOSE 8000
 
 # `--proxy-headers` so X-Forwarded-* from nginx reaches Starlette correctly.
