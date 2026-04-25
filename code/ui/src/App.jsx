@@ -899,7 +899,7 @@ function splitToItem(split, post) {
   };
 }
 
-function ThreadPage({ post, open, onClose, onOpenItem, housemates }) {
+function ThreadPage({ post, open, onClose, onOpenItem, housemates, onScanForPost }) {
   // Live-mode (post fetched from backend) keeps its own detail in state so we
   // can re-fetch after a comment / split is added.
   const [detail, setDetail] = React.useState(null);
@@ -1034,6 +1034,19 @@ function ThreadPage({ post, open, onClose, onOpenItem, housemates }) {
             text={post.text}
             attachment={post.attachment}
           />
+          {onScanForPost && (
+            <button
+              onClick={() => onScanForPost(post)}
+              style={{
+                padding: '10px 16px', borderRadius: 18,
+                background: BF_COLORS.lime, color: '#000', border: 'none',
+                fontFamily: SF, fontSize: 13, fontWeight: 700, letterSpacing: -0.1,
+                cursor: 'pointer', marginTop: 12, alignSelf: 'flex-start',
+              }}
+            >
+              scan a receipt for this
+            </button>
+          )}
         </div>
 
         {replies.length > 0 && (
@@ -3131,8 +3144,14 @@ function SendingScreen({ onDone }) {
 
 function ScanFlow({
   phase, setPhase, onClose, cameraStyle, reviewLayout, aiChatty, aiOpen,
-  scan, scanPreview, housemates, scanError, onCapture, onFinalize,
+  scan, scanPreview, housemates, scanError, onCapture, onFinalize, postContext,
 }) {
+  React.useEffect(() => {
+    if (scan && postContext && !scan.post_context) {
+      scan.post_context = postContext;
+    }
+  }, [scan, postContext]);
+
   if (phase === 'camera') {
     return <CameraScreen onCapture={onCapture} onClose={onClose} style={cameraStyle} />;
   }
@@ -3333,6 +3352,7 @@ function BunqFlatmateApp() {
   const [scanData, setScanData] = React.useState(null);    // live scan payload from backend
   const [scanError, setScanError] = React.useState(null);
   const [scanPreview, setScanPreview] = React.useState(null); // blob: URL of the captured/uploaded file
+  const [scanPostContext, setScanPostContext] = React.useState(null);
   const [housemates, setHousemates] = React.useState(null);
 
   // Fetch housemates once we're signed in — reused by the review screen's roster chips.
@@ -3376,13 +3396,13 @@ function BunqFlatmateApp() {
       if (assignments) {
         await setAssignments(scanData.id, assignments);
       }
-      await finalizeScan(scanData.id);
+      await finalizeScan(scanData.id, scanPostContext ? { parent_post_id: scanPostContext.post_id } : undefined);
       setScanPhase('sending');
     } catch (e) {
       setScanError(e.body?.detail || e.message || 'finalize failed');
       setScanPhase('processing');
     }
-  }, [scanData]);
+  }, [scanData, scanPostContext]);
   const [tab, setTab] = React.useState('home'); // 'home' | 'feed' | 'subs' | 'mates'
   const [selectedItem, setSelectedItem] = React.useState(null);
   const [itemOpen, setItemOpen] = React.useState(false);
@@ -3429,6 +3449,19 @@ function BunqFlatmateApp() {
   const [postOpen, setPostOpen] = React.useState(false);
   const openPost = (p) => { setSelectedPost(p); requestAnimationFrame(() => setPostOpen(true)); };
   const closePost = () => { setPostOpen(false); setTimeout(() => setSelectedPost(null), 400); };
+  const onScanForPost = (post) => {
+    setScanPostContext({
+      post_id: post.id,
+      post_text: post.text,
+      author: { id: post.author?.id, name: post.author?.name },
+      comments: (post.comments || []).map(c => ({
+        author: { id: c.author?.id, name: c.author?.name },
+        text: c.text,
+      })),
+    });
+    closePost();
+    setScanPhase('camera');
+  };
   const [profileOpen, setProfileOpen] = React.useState(false);
   const openProfile = () => setProfileOpen(true);
   const closeProfile = () => setProfileOpen(false);
@@ -3649,7 +3682,7 @@ function BunqFlatmateApp() {
               )}
             </div>
           )}
-          <ThreadPage post={selectedPost} open={postOpen} onClose={closePost} onOpenItem={openItem} housemates={housemates} />
+          <ThreadPage post={selectedPost} open={postOpen} onClose={closePost} onOpenItem={openItem} housemates={housemates} onScanForPost={onScanForPost} />
           <ProfilePage
             open={profileOpen}
             onClose={closeProfile}
@@ -3705,10 +3738,12 @@ function BunqFlatmateApp() {
             <ScanFlow
               phase={scanPhase}
               setPhase={setScanPhase}
+              postContext={scanPostContext}
               onClose={() => {
                 setScanPhase(null); setScanData(null); setScanError(null);
                 if (scanPreview) URL.revokeObjectURL(scanPreview);
                 setScanPreview(null);
+                setScanPostContext(null);
               }}
               cameraStyle={tweaks.cameraStyle}
               reviewLayout={tweaks.reviewLayout}
