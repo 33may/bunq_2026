@@ -55,7 +55,7 @@ export default function Landing({ onConnect }) {
           <div style={{
             fontFamily: SFR, fontWeight: 700, fontSize: 22, color: '#fff',
             letterSpacing: -0.4,
-          }}>house brain</div>
+          }}>flatmate</div>
         </div>
 
         {/* hero copy */}
@@ -100,7 +100,7 @@ export default function Landing({ onConnect }) {
           marginTop: 14, textAlign: 'center',
           fontFamily: SF, fontSize: 11, color: BF_COLORS.ter, letterSpacing: 0.2,
         }}>
-          you'll be redirected to bunq to authorize
+          tests simulate the auth flow with predefined bunq sandbox accounts
         </div>
       </div>
     </div>

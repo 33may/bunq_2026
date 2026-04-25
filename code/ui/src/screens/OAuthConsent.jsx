@@ -119,7 +119,7 @@ export default function OAuthConsent({ open, onAllow, onCancel }) {
             fontFamily: SFR, fontSize: 19, color: '#0B0B0E', letterSpacing: -0.3,
             fontWeight: 700,
           }}>
-            <span style={{ color: '#00A656' }}>house brain</span> wants to access your bunq account
+            <span style={{ color: '#00A656' }}>flatmate</span> wants to access your bunq account
           </div>
 
           <div style={{
