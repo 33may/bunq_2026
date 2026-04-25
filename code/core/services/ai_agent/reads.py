@@ -105,19 +105,65 @@ def list_housemates(db: Session, *, house_id: str) -> list[dict]:
 def get_housemate(
     db: Session, *, house_id: str, name_or_id: str,
 ) -> dict | None:
+    """Resolve a name fragment / typo / id to one housemate.
+
+    Matching ladder (first hit wins):
+      1. exact id
+      2. exact case-insensitive name
+      3. prefix (case-insensitive) — "mar" → marco
+      4. one-edit fuzzy (Levenshtein 1) — "marko" / "mark" → marco
+      5. substring contained either way — "marc" → marco
+
+    Returns None only if nothing matches; raises if multiple distinct
+    housemates would tie at the same level (caller can re-prompt).
+    """
     n = (name_or_id or "").strip()
     if not n:
         return None
     candidates = list_housemates(db, house_id=house_id)
-    # exact id first, then case-insensitive name
+    # 1. exact id
     for m in candidates:
         if m["id"] == n:
             return m
     nl = n.lower()
+    # 2. exact name
     for m in candidates:
         if m["name"].lower() == nl:
             return m
+    # 3. prefix
+    starts = [m for m in candidates if m["name"].lower().startswith(nl) or nl.startswith(m["name"].lower())]
+    if len(starts) == 1:
+        return starts[0]
+    # 4. one-edit fuzzy
+    edits = [m for m in candidates if _levenshtein(m["name"].lower(), nl) <= 1]
+    if len(edits) == 1:
+        return edits[0]
+    # 5. substring (last resort)
+    subs = [m for m in candidates if nl in m["name"].lower() or m["name"].lower() in nl]
+    if len(subs) == 1:
+        return subs[0]
     return None
+
+
+def _levenshtein(a: str, b: str) -> int:
+    """Tiny edit-distance — fine for short housemate names."""
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        curr = [i]
+        for j, cb in enumerate(b, 1):
+            curr.append(min(
+                curr[j - 1] + 1,         # insert
+                prev[j] + 1,             # delete
+                prev[j - 1] + (ca != cb),  # substitute
+            ))
+        prev = curr
+    return prev[-1]
 
 
 def get_balance_with(
