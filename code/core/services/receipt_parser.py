@@ -67,9 +67,12 @@ async def parse_receipt_image(image_path: str) -> dict:
     if not settings.anthropic_api_key:
         raise RuntimeError("ANTHROPIC_API_KEY is not set — receipt parsing disabled.")
 
+    # OCR + structured-output is a vision task that doesn't need top-tier
+    # reasoning — Haiku does it 2-3x faster than Sonnet. Chat agent stays
+    # on settings.anthropic_model (Sonnet).
     options = ClaudeAgentOptions(
         system_prompt=SYSTEM_PROMPT,
-        model=settings.anthropic_model,
+        model="claude-haiku-4-5-20251001",
         allowed_tools=["Read"],
         permission_mode="bypassPermissions",  # one-shot service, no human in loop
         setting_sources=[],                   # don't pick up the user's claude config
