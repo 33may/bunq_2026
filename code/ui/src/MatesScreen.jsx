@@ -502,19 +502,29 @@ export function SettleSheet({ peer, open, onClose, onDone }) {
         }}>
           settle up with
         </div>
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 12, marginTop: 6,
-        }}>
-          <Avatar
-            initial={(peer?.name || '?')[0].toUpperCase()}
-            color={peer?.color || BF_COLORS.amber}
-            size={42}
-          />
-          <div style={{
-            fontFamily: SFR, fontSize: 22, fontWeight: 800, color: BF_COLORS.text,
-            letterSpacing: -0.4,
-          }}>{peer?.name || 'someone'}</div>
-        </div>
+        {(() => {
+          // Prefer the resolved name from the preview API; fall back to
+          // whatever the caller passed; never show the raw UUID.
+          const apiName = preview?.peer?.name
+          const local = peer?.name && peer.name !== peer?.id ? peer.name : null
+          const display = apiName || local || 'housemate'
+          const initial = (display[0] || '?').toUpperCase()
+          return (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 12, marginTop: 6,
+            }}>
+              <Avatar
+                initial={initial}
+                color={peer?.color || BF_COLORS.amber}
+                size={42}
+              />
+              <div style={{
+                fontFamily: SFR, fontSize: 22, fontWeight: 800, color: BF_COLORS.text,
+                letterSpacing: -0.4,
+              }}>{display}</div>
+            </div>
+          )
+        })()}
 
         <div style={{ marginTop: 18, minHeight: 84 }}>
           {loading && <Skeleton />}
