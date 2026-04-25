@@ -4489,7 +4489,7 @@ function BunqFlatmateApp() {
               consumeAction(aid);
             }}
           />
-          {!scanPhase && !itemOpen && !mateOpen && !formOpen && !postOpen && !profileOpen && !notifOpen && !profileMemoryOpen && (
+          {!scanPhase && !itemOpen && !mateOpen && !formOpen && !postOpen && !profileOpen && !notifOpen && !profileMemoryOpen && !settleOpen && (
             <Dock
               active={tab}
               onTab={setTab}
