@@ -1,6 +1,7 @@
 """POST /ai/chat — SSE streaming endpoint over the AgentRunner."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -51,27 +52,45 @@ async def post_ai_chat(
         len(history), body.message[:80],
     )
 
-    async def gen():
-        # Yield a comment frame immediately so StreamingResponse has bytes
-        # flowing before we start awaiting the SDK. Without this, FastAPI /
-        # uvicorn will sometimes treat the not-yet-streaming response as
-        # cancellable and tear down the request before the agent produces
-        # its first event.
-        yield ": stream-start\n\n"
-        n = 0
+    # Bridge: the runner runs in its own task and pushes events into a queue;
+    # the SSE generator only reads from the queue. This isolates the SDK's
+    # internal anyio cancel scopes from the streaming generator's
+    # yield-boundary lifecycle — without this layering, anyio cancels its
+    # subprocess connect at the first yield boundary in StreamingResponse.
+    out_queue: asyncio.Queue = asyncio.Queue()
+    DONE_SENTINEL = object()
+
+    async def producer():
         try:
             async for ev in runner_mod.run(
                 message=body.message, history=history, page_context=ctx,
                 user=me, house=house, db=db,
             ):
+                await out_queue.put(ev)
+        except Exception:
+            log.exception("ai.chat.producer client_turn=%s", body.client_turn_id)
+            await out_queue.put(ErrorEvent(message="agent failed"))
+            await out_queue.put(DoneEvent(turn_id="error"))
+        finally:
+            await out_queue.put(DONE_SENTINEL)
+
+    async def gen():
+        # Immediate keepalive — gives StreamingResponse bytes to flush before
+        # we start awaiting upstream events.
+        yield ": stream-start\n\n"
+        task = asyncio.create_task(producer())
+        n = 0
+        try:
+            while True:
+                ev = await out_queue.get()
+                if ev is DONE_SENTINEL:
+                    break
                 n += 1
                 log.info("ai.chat.frame #%d type=%s", n, ev.type)
                 yield sse_frame(ev)
-        except Exception:
-            log.exception("ai.chat.unhandled client_turn=%s", body.client_turn_id)
-            yield sse_frame(ErrorEvent(message="agent failed"))
-            yield sse_frame(DoneEvent(turn_id="error"))
         finally:
             log.info("ai.chat.out client_turn=%s frames=%d", body.client_turn_id, n)
+            if not task.done():
+                task.cancel()
 
     return StreamingResponse(gen(), media_type="text/event-stream")
