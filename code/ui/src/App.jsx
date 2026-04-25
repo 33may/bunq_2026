@@ -4310,18 +4310,27 @@ function BunqFlatmateApp() {
       case 'comment':     openPostForComment(a.payload.post_id, a.payload.text); consumeAction(a.id); break
       case 'update_profile': openProfileMemory(a.payload?.add || '', a.id); break
       case 'settle_up': {
-        // Resolve the peer from the housemates payload so the sheet can
-        // show their name/color before the preview round-trip resolves.
-        const pid = a.payload?.peer_id;
-        const peer = (housemates || []).find(h => h.id === pid);
+        // Resolve the peer from housemates so the sheet shows their name
+        // before the preview round-trip resolves. The AI sometimes passes
+        // a name/label instead of a UUID — match all three.
+        const pid = String(a.payload?.peer_id || '').toLowerCase();
+        const peer = (housemates || []).find(h =>
+          h.id === a.payload?.peer_id ||
+          (h.name || '').toLowerCase() === pid ||
+          (h.bunq_label || '').toLowerCase() === pid
+        );
         if (peer) {
           openSettle({
             id: peer.id, name: peer.name,
             color: peer.color || BF_COLORS.amber,
           }, a.id);
         } else {
-          // Fallback: open with bare id; SettleSheet will still fetch preview.
-          openSettle({ id: pid, name: 'mate', color: BF_COLORS.amber }, a.id);
+          // Last resort — preview round-trip will still work via id.
+          openSettle({
+            id: a.payload?.peer_id,
+            name: a.payload?.peer_id || 'housemate',
+            color: BF_COLORS.amber,
+          }, a.id);
         }
         break;
       }
