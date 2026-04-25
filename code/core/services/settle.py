@@ -38,6 +38,7 @@ from sqlalchemy.orm import Session
 from ..data.models import (
     House, Split, SplitRequest, SplitRequestStatus, User,
 )
+from .bunq import get_bunq_client
 from .splits import create_split
 
 log = logging.getLogger(__name__)
@@ -53,6 +54,12 @@ class SettleResult(TypedDict):
     net_amount: str
     direction: str
     closed: int
+    # Branch A (I owe → fired a bunq Payment): payment_id is set, the
+    # split/request fields stay None. Balance with peer hits 0 immediately.
+    # Branch B (peer owes me → consolidated into one new request): the
+    # split/request fields are set, payment_id stays None.
+    kind: str            # "payment" | "request" | "noop"
+    payment_id: str | None
     new_split_id: str | None
     new_request_id: str | None
     peer: dict
@@ -101,41 +108,70 @@ def settle_up(
         db.commit()
         return {
             "net_amount": "0.00", "direction": "even", "closed": closed,
+            "kind": "noop", "payment_id": None,
             "new_split_id": None, "new_request_id": None,
             "peer": {"id": peer.id, "name": peer.name},
         }
 
     # 1) revoke every open one in the pair — single source of truth before
-    #    we create the replacement so balance compute is consistent if a
-    #    later step throws.
+    #    the replacement step so balance compute is consistent if it throws.
     for _, r, _ in rows:
         r.status = SplitRequestStatus.revoked
     db.flush()
 
-    # 2) create the replacement split — direction follows sign(net)
-    if net > 0:
-        new_payer, new_debtor, amount = me, peer, net
-        direction = "incoming"
-    else:
-        new_payer, new_debtor, amount = peer, me, -net
-        direction = "outgoing"
+    abs_amount = abs(net)
 
-    title = f"settle up · {peer.name if new_payer is me else me.name}"
-    description = f"net of {closed} request(s)"
+    # 2) branch on direction.
+    if net < 0:
+        # ── BRANCH A ── I owe peer. Fire a real bunq Payment from me to
+        # peer. No new SplitRequest is created — settlement is final;
+        # balance with peer hits 0 instantly because all the messy open
+        # requests are revoked and no new debt replaces them.
+        client = get_bunq_client()
+        payment_id: str | None = None
+        try:
+            resp = client.send_payment(
+                from_label=me.bunq_label,
+                to_email=peer.email,
+                amount_eur=float(abs_amount),
+                description=f"settle up · net of {closed} request(s)",
+            )
+            payment_id = str((resp.get("Response") or [{}])[0].get("Id", {}).get("id") or "")
+        except Exception as e:
+            # Roll the revokes back so the UI doesn't lie about what's open.
+            db.rollback()
+            log.exception("bunq Payment failed during settle")
+            raise RuntimeError(f"bunq payment failed: {e}") from e
+        db.commit()
+        return {
+            "net_amount": str(abs_amount.quantize(Decimal("0.01"))),
+            "direction": "outgoing",
+            "closed": closed,
+            "kind": "payment",
+            "payment_id": payment_id or None,
+            "new_split_id": None,
+            "new_request_id": None,
+            "peer": {"id": peer.id, "name": peer.name},
+        }
+
+    # ── BRANCH B ── peer owes me. Consolidate into ONE clean request
+    # (me→peer) so the books are tidy. Balance stays at +N until they pay.
     new_split = create_split(
         db,
         house_id=house.id,
-        payer=new_payer,
-        participants=[new_debtor],
-        total=amount,
-        title=title,
-        description=description,
+        payer=me,
+        participants=[peer],
+        total=abs_amount,
+        title=f"settle up · {peer.name}",
+        description=f"net of {closed} request(s)",
     )
     new_request = new_split.requests[0] if new_split.requests else None
     return {
-        "net_amount": str(amount.quantize(Decimal("0.01"))),
-        "direction": direction,
+        "net_amount": str(abs_amount.quantize(Decimal("0.01"))),
+        "direction": "incoming",
         "closed": closed,
+        "kind": "request",
+        "payment_id": None,
         "new_split_id": new_split.id,
         "new_request_id": new_request.id if new_request else None,
         "peer": {"id": peer.id, "name": peer.name},

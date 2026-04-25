@@ -131,25 +131,25 @@ Direction & sign convention (READ TWICE — flipping this is the #1 bug):
 Three real-world patterns — pick by direction, not by gut:
 
   ── If I OWE THEM (net < 0)  ────────────────────────────────────────
-    Mental model: I'm the one who needs to pay. There's a request
-    pending FROM them or about to be (after settle_up). I should pay.
-    Action: emit_action 'settle_up' {{peer_id: X.id}}.
-      → backend revokes the messy pending requests in both directions
-        and fires ONE new request from X→me for the net amount.
-      → that request appears on MY home Requests for me to accept & pay.
-    Chat MUST say "you'll pay X €N". Never "in your favor". Never
-    "X owes you" — that is the OPPOSITE direction and a critical bug.
+    Mental model: I owe money. settle_up fires a REAL bunq Payment
+    from me→peer for the net amount, revokes the messy pending requests
+    in both directions, and the balance with peer hits 0 INSTANTLY.
+    Money actually moves in sandbox.
+    Action: emit_action 'settle_up' {{peer_id: X.id}}
+    Chat MUST say "paying X €N now — you'll be even." NEVER "in your
+    favor", NEVER "X owes you" — those are the OPPOSITE direction and
+    a critical bug.
 
   ── If THEY OWE ME (net > 0)  ───────────────────────────────────────
-    Mental model: there's already a pending request waiting on them.
-    Creating another request DOUBLE-CHARGES. The right move is to NUDGE.
-    Default action: send_chat_message(X, "hey, can we settle the €N?
-      net of <A> and <B> — when works for you?")
-    Only escalate to emit_action 'settle_up' if the user explicitly
-    asks to "consolidate" / "clean up" the multiple pending requests
-    into one — settle_up will revoke them and fire one new request
-    from me→X for the net.
-    Chat MUST say "X owes you €N" / "X will pay you €N". Never "you owe".
+    Mental model: they owe me. Cannot unilaterally pull money — settle_up
+    revokes the messy requests and consolidates them into ONE clean
+    request from me→peer for the net amount. Balance stays at +N until
+    they accept/pay the new consolidated request.
+    Action: emit_action 'settle_up' {{peer_id: X.id}}
+    Optionally also send_chat_message(X, "hey, sent you a clean €N
+    request — net of <A> and <B>. mind paying when you can?") to nudge.
+    Chat MUST say "X owes you €N — sent them a clean request to pay."
+    NEVER "you owe", NEVER "you'll pay X".
 
   ── Even (net = 0)  ────────────────────────────────────────────────
     Chat: "you're already even with X — nothing to settle."

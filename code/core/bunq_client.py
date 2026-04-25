@@ -274,6 +274,30 @@ class BunqClient:
             body,
         )
 
+    # ── Direct payment (real money move; no request round-trip) ─────────
+    def send_payment(
+        self,
+        from_label: str,
+        to_email: str,
+        amount_eur: float,
+        description: str,
+    ) -> dict:
+        """Push money from `from_label`'s primary account to `to_email`.
+        Returns the bunq /payment Response. In sandbox the funds move
+        instantly; the recipient sees a positive Payment in their feed."""
+        _token, user_id = self.session(from_label)
+        account_id = self.primary_account_id(from_label)
+        body = {
+            "amount": {"value": f"{amount_eur:.2f}", "currency": "EUR"},
+            "counterparty_alias": {"type": "EMAIL", "value": to_email},
+            "description": description,
+        }
+        return self.call(
+            from_label, "POST",
+            f"/user/{user_id}/monetary-account/{account_id}/payment",
+            body,
+        )
+
     # ── Request inspection + approval ───────────────────────────────────
     def list_outgoing_requests(self, label: str) -> list[dict]:
         """Requests this user has SENT (request-inquiry)."""
